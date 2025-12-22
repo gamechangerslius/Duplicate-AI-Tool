@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { fetchAds, fetchPageNames } from '@/lib/db';
 import type { Ad } from '@/lib/types';
@@ -22,26 +22,12 @@ export default function Home() {
   const [selectedPage, setSelectedPage] = useState<string>('');
   const [selectedDuplicates, setSelectedDuplicates] = useState<string>('');
 
-  useEffect(() => {
-    loadPageNames();
-    loadAds();
-  }, []);
-
-  useEffect(() => {
-    setCurrentPage(1); // Reset to page 1 when filters change
-    loadAds();
-  }, [selectedPage, selectedDuplicates]);
-
-  useEffect(() => {
-    loadAds();
-  }, [currentPage]);
-
   async function loadPageNames() {
     const pages = await fetchPageNames();
     setPageNames(pages);
   }
 
-  async function loadAds() {
+  const loadAds = useCallback(async () => {
     setLoading(true);
     
     const duplicatesRange = DUPLICATES_RANGES.find(r => r.label === selectedDuplicates);
@@ -61,7 +47,25 @@ export default function Home() {
     setAds(data);
     setTotalPages(Math.ceil(total / PER_PAGE));
     setLoading(false);
-  }
+  }, [selectedPage, selectedDuplicates, currentPage]);
+
+  useEffect(() => {
+    loadPageNames();
+  }, []);
+
+  useEffect(() => {
+    setCurrentPage(1); // Reset to page 1 when filters change
+    loadAds();
+  }, [selectedPage, selectedDuplicates, loadAds]);
+
+  useEffect(() => {
+    loadAds();
+  }, [currentPage, loadAds]);
+
+  // Load data on initial mount
+  useEffect(() => {
+    loadAds();
+  }, [loadAds]);
 
   const filteredAds = displayFormat === 'ALL' 
     ? ads 
