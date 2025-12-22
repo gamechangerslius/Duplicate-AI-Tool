@@ -55,17 +55,11 @@ export default function Home() {
 
   useEffect(() => {
     setCurrentPage(1); // Reset to page 1 when filters change
-    loadAds();
-  }, [selectedPage, selectedDuplicates, loadAds]);
+  }, [selectedPage, selectedDuplicates]);
 
   useEffect(() => {
     loadAds();
   }, [currentPage, loadAds]);
-
-  // Load data on initial mount
-  useEffect(() => {
-    loadAds();
-  }, [loadAds]);
 
   const filteredAds = displayFormat === 'ALL' 
     ? ads 

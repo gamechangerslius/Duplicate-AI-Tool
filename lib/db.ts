@@ -44,8 +44,9 @@ export async function fetchAds(
     // Select only needed fields to reduce network load
     let query = supabase
       .from('data_base')
-      .select('ad_archive_id, title, page_name, display_format, vector_group')
-      .not('vector_group', 'is', null);
+      .select('ad_archive_id, title, page_name, text, caption, display_format, vector_group')
+      .not('vector_group', 'is', null)
+      .range(0, 999999); // fetch all rows (Supabase default limit is 1000)
 
     // Apply filters
     if (filters?.pageName) {
@@ -85,6 +86,8 @@ export async function fetchAds(
           ad_archive_id: ad.ad_archive_id,
           title: ad.title,
           page_name: ad.page_name,
+          ad_text: (ad as any).ad_text ?? (ad as any).text ?? null,
+          caption: (ad as any).caption ?? (ad as any).cta_text ?? null,
           display_format: ad.display_format,
           created_at: new Date().toISOString(),
           vector_group: ad.vector_group,
@@ -154,16 +157,21 @@ export async function fetchAdByArchiveId(adArchiveId: string): Promise<Ad | null
     return null;
   }
 
+  const { embedding_vec, ...raw } = data;
+
   return {
     id: data.ad_archive_id, // Use ad_archive_id as id
     ad_archive_id: data.ad_archive_id,
     title: data.title,
     page_name: data.page_name,
+    ad_text: data.ad_text ?? data.text ?? null,
+    caption: data.caption ?? data.cta_text ?? null,
     display_format: data.display_format,
     created_at: data.created_at || new Date().toISOString(),
     vector_group: data.vector_group,
     duplicates_count: data.duplicates_count,
     meta_ad_url: getMetaAdUrl(data.ad_archive_id),
+    raw,
   };
 }
 
@@ -182,16 +190,21 @@ export async function fetchAdById(id: string): Promise<Ad | null> {
     return null;
   }
 
+  const { embedding_vec, ...raw } = data;
+
   return {
     id: data.ad_archive_id, // Use ad_archive_id as id
     ad_archive_id: data.ad_archive_id,
     title: data.title,
     page_name: data.page_name,
+    ad_text: data.ad_text ?? data.text ?? null,
+    caption: data.caption ?? data.cta_text ?? null,
     display_format: data.display_format,
     created_at: data.created_at || new Date().toISOString(),
     vector_group: data.vector_group,
     duplicates_count: data.duplicates_count,
     meta_ad_url: getMetaAdUrl(data.ad_archive_id),
+    raw,
   };
 }
 
@@ -214,17 +227,99 @@ export async function fetchRelatedAds(vectorGroup: number, currentAdArchiveId: s
     return [];
   }
 
-  return (data || []).map((ad) => ({
-    id: ad.ad_archive_id, // Use ad_archive_id as id
-    ad_archive_id: ad.ad_archive_id,
-    title: ad.title,
-    page_name: ad.page_name,
-    display_format: ad.display_format,
-    created_at: ad.created_at || new Date().toISOString(),
-    vector_group: ad.vector_group,
-    duplicates_count: ad.duplicates_count,
-    meta_ad_url: getMetaAdUrl(ad.ad_archive_id),
-  }));
+  return (data || []).map((ad) => {
+    const { embedding_vec, ...raw } = ad;
+    return {
+      id: ad.ad_archive_id, // Use ad_archive_id as id
+      ad_archive_id: ad.ad_archive_id,
+      title: ad.title,
+      page_name: ad.page_name,
+      ad_text: (ad as any).ad_text ?? (ad as any).text ?? null,
+      caption: (ad as any).caption ?? (ad as any).cta_text ?? null,
+      display_format: ad.display_format,
+      created_at: ad.created_at || new Date().toISOString(),
+      vector_group: ad.vector_group,
+      duplicates_count: ad.duplicates_count,
+      meta_ad_url: getMetaAdUrl(ad.ad_archive_id),
+      raw,
+    };
+  });
+}
+
+/**
+ * Fetch a deterministic representative ad for the given vector_group
+ * Strategy: the ad with the smallest ad_archive_id in the group
+ */
+export async function fetchGroupRepresentative(vectorGroup: number): Promise<Ad | null> {
+  if (vectorGroup === -1) return null;
+
+  const { data, error } = await supabase
+    .from('data_base')
+    .select('*')
+    .eq('vector_group', vectorGroup)
+    .order('ad_archive_id', { ascending: true })
+    .limit(1)
+    .single();
+
+  if (error || !data) {
+    console.error('Error fetching group representative:', JSON.stringify(error, null, 2));
+    return null;
+  }
+
+  const { embedding_vec, ...raw } = data;
+
+  return {
+    id: data.ad_archive_id,
+    ad_archive_id: data.ad_archive_id,
+    title: data.title,
+    ad_text: data.ad_text ?? data.text ?? null,
+    caption: data.caption ?? data.cta_text ?? null,
+    page_name: data.page_name,
+    display_format: data.display_format,
+    created_at: data.created_at || new Date().toISOString(),
+    vector_group: data.vector_group,
+    duplicates_count: data.duplicates_count,
+    meta_ad_url: getMetaAdUrl(data.ad_archive_id),
+    raw,
+  };
+}
+
+/**
+ * Fetch full raw row by ad_archive_id (all columns)
+ */
+export async function fetchAdRawByArchiveId(adArchiveId: string): Promise<Record<string, any> | null> {
+  const { data, error } = await supabase
+    .from('data_base')
+    .select('*')
+    .eq('ad_archive_id', adArchiveId)
+    .single();
+
+  if (error || !data) {
+    console.error('Error fetching raw ad:', JSON.stringify(error, null, 2));
+    return null;
+  }
+  return data as Record<string, any>;
+}
+
+/**
+ * Fetch full raw representative row for a vector_group
+ */
+export async function fetchGroupRepresentativeRaw(vectorGroup: number): Promise<Record<string, any> | null> {
+  if (vectorGroup === -1) return null;
+
+  const { data, error } = await supabase
+    .from('data_base')
+    .select('*')
+    .eq('vector_group', vectorGroup)
+    .order('ad_archive_id', { ascending: true })
+    .limit(1)
+    .single();
+
+  if (error || !data) {
+    console.error('Error fetching raw group representative:', JSON.stringify(error, null, 2));
+    return null;
+  }
+  return data as Record<string, any>;
 }
 
 /**
@@ -270,40 +365,4 @@ export async function fetchPageNames(): Promise<{ name: string; count: number }[
   pageNamesCacheTime = Date.now();
   
   return result;
-}
-
-/**
- * Get unique business names with count of unique creatives
- */
-export async function fetchBusinessNames(): Promise<{ name: string; count: number }[]> {
-  const { data, error } = await supabase
-    .from('data_base')
-    .select('business, vector_group')
-    .not('vector_group', 'is', null)
-    .not('business', 'is', null)
-    .neq('vector_group', -1);
-
-  if (error) {
-    console.error('Error fetching business names:', error);
-    return [];
-  }
-
-  // Count unique vector groups per business
-  const businessMap = new Map<string, Set<number>>();
-  
-  for (const row of (data || [])) {
-    if (row.business && !businessMap.has(row.business)) {
-      businessMap.set(row.business, new Set());
-    }
-    if (row.business) {
-      businessMap.get(row.business)!.add(row.vector_group);
-    }
-  }
-
-  return Array.from(businessMap.entries())
-    .map(([name, groups]) => ({
-      name,
-      count: groups.size,
-    }))
-    .sort((a, b) => b.count - a.count);
 }

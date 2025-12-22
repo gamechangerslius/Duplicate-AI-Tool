@@ -3,12 +3,15 @@ export interface Ad {
   ad_archive_id: string;
   title?: string;
   page_name: string;
+  ad_text?: string;
+  caption?: string;
   business?: string;
   display_format: 'IMAGE' | 'VIDEO';
   created_at: string;
   vector_group: number | null;
   duplicates_count?: number;
   meta_ad_url?: string;
+  raw?: Record<string, any>;
 }
 
 export interface FilterOptions {
