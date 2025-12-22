@@ -2,7 +2,7 @@ import { supabase } from './supabase';
 import type { Ad } from './types';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const BUCKET_NAME = 'test2';
+const BUCKET_NAME = 'blinkist2';
 
 // Cache for pageNames
 let pageNamesCache: { name: string; count: number }[] | null = null;
@@ -43,7 +43,7 @@ export async function fetchAds(
   try {
     // Select only needed fields to reduce network load
     let query = supabase
-      .from('data_base')
+      .from('duplicate_2data_base_blinkist')
       .select('ad_archive_id, title, page_name, text, caption, display_format, vector_group')
       .not('vector_group', 'is', null)
       .range(0, 999999); // fetch all rows (Supabase default limit is 1000)
@@ -147,7 +147,7 @@ export async function fetchAds(
  */
 export async function fetchAdByArchiveId(adArchiveId: string): Promise<Ad | null> {
   const { data, error } = await supabase
-    .from('data_base')
+    .from('duplicate_2data_base_blinkist')
     .select('*')
     .eq('ad_archive_id', adArchiveId)
     .single();
@@ -180,7 +180,7 @@ export async function fetchAdByArchiveId(adArchiveId: string): Promise<Ad | null
  */
 export async function fetchAdById(id: string): Promise<Ad | null> {
   const { data, error } = await supabase
-    .from('data_base')
+    .from('duplicate_2data_base_blinkist')
     .select('*')
     .eq('ad_archive_id', id)
     .single();
@@ -217,7 +217,7 @@ export async function fetchRelatedAds(vectorGroup: number, currentAdArchiveId: s
   }
 
   const { data, error } = await supabase
-    .from('data_base')
+    .from('duplicate_2data_base_blinkist')
     .select('*')
     .eq('vector_group', vectorGroup)
     .neq('ad_archive_id', currentAdArchiveId);
@@ -254,7 +254,7 @@ export async function fetchGroupRepresentative(vectorGroup: number): Promise<Ad 
   if (vectorGroup === -1) return null;
 
   const { data, error } = await supabase
-    .from('data_base')
+    .from('duplicate_2data_base_blinkist')
     .select('*')
     .eq('vector_group', vectorGroup)
     .order('ad_archive_id', { ascending: true })
@@ -289,7 +289,7 @@ export async function fetchGroupRepresentative(vectorGroup: number): Promise<Ad 
  */
 export async function fetchAdRawByArchiveId(adArchiveId: string): Promise<Record<string, any> | null> {
   const { data, error } = await supabase
-    .from('data_base')
+    .from('duplicate_2data_base_blinkist')
     .select('*')
     .eq('ad_archive_id', adArchiveId)
     .single();
@@ -308,7 +308,7 @@ export async function fetchGroupRepresentativeRaw(vectorGroup: number): Promise<
   if (vectorGroup === -1) return null;
 
   const { data, error } = await supabase
-    .from('data_base')
+    .from('duplicate_2data_base_blinkist')
     .select('*')
     .eq('vector_group', vectorGroup)
     .order('ad_archive_id', { ascending: true })
@@ -333,7 +333,7 @@ export async function fetchPageNames(): Promise<{ name: string; count: number }[
   }
 
   const { data, error } = await supabase
-    .from('data_base')
+    .from('duplicate_2data_base_blinkist')
     .select('page_name, vector_group')
     .not('vector_group', 'is', null)
     .neq('vector_group', -1);

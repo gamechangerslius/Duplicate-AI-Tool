@@ -5,7 +5,7 @@ export async function GET() {
   try {
     // Simple health check - just test if we can connect
     const { data, error } = await supabase
-      .from('data_base')
+      .from('duplicate_2data_base_blinkist')
       .select('*')
       .limit(1)
       .single();
