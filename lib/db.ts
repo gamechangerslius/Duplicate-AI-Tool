@@ -7,9 +7,8 @@ const HOLYWATER_TABLE = 'data_base';
 const HEADWAY_BUCKET = 'blinkist2';
 const HOLYWATER_BUCKET = 'test2';
 
-// Cache for pageNames
-let pageNamesCache: { name: string; count: number }[] | null = null;
-let pageNamesCacheTime = 0;
+// Cache for pageNames (per table)
+const pageNamesCacheMap = new Map<string, { data: { name: string; count: number }[]; time: number }>();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 // Get image URL from Supabase Storage
@@ -302,11 +301,12 @@ export async function fetchGroupRepresentativeRaw(vectorGroup: number, tableName
   return data as Record<string, any>;
 }
 
-// Get unique page names with count of unique creatives (cached)
+// Get unique page names with count of unique creatives (cached per table)
 export async function fetchPageNames(tableName: string = HOLYWATER_TABLE): Promise<{ name: string; count: number }[]> {
   const now = Date.now();
-  if (pageNamesCache && (now - pageNamesCacheTime) < CACHE_DURATION) {
-    return pageNamesCache;
+  const cached = pageNamesCacheMap.get(tableName);
+  if (cached && (now - cached.time) < CACHE_DURATION) {
+    return cached.data;
   }
 
   const { data, error } = await supabase
@@ -332,7 +332,6 @@ export async function fetchPageNames(tableName: string = HOLYWATER_TABLE): Promi
     .map(([name, groups]) => ({ name, count: groups.size }))
     .sort((a, b) => b.count - a.count);
 
-  pageNamesCache = result;
-  pageNamesCacheTime = Date.now();
+  pageNamesCacheMap.set(tableName, { data: result, time: Date.now() });
   return result;
 }
