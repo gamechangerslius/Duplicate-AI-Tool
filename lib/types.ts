@@ -6,6 +6,9 @@ export interface Ad {
   ad_text?: string;
   caption?: string;
   business?: string;
+  image_url?: string;
+  url?: string;
+  competitor_niche?: string;
   display_format: 'IMAGE' | 'VIDEO';
   created_at: string;
   vector_group: number | null;

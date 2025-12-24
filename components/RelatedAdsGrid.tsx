@@ -8,15 +8,46 @@ import { getImageUrl } from '@/lib/db';
 interface Props {
   ads: Ad[];
   groupSize: number;
+  vectorGroup: number;
+  currentAdArchiveId: string;
+  sourceTable?: string;
 }
 
-export function RelatedAdsGrid({ ads, groupSize }: Props) {
+export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId, sourceTable }: Props) {
   const [selected, setSelected] = useState<Ad | null>(null);
+  const [items, setItems] = useState<Ad[]>(ads);
+  const [loading, setLoading] = useState(false);
+  const [cursor, setCursor] = useState<string | null>(ads.length ? ads[ads.length - 1].ad_archive_id : null);
+  const [hasMore, setHasMore] = useState(true);
+
+  async function loadMore() {
+    if (loading || !hasMore) return;
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ vector_group: String(vectorGroup), current_id: currentAdArchiveId, limit: '60' });
+      if (sourceTable) params.set('table', sourceTable);
+      if (cursor) params.set('last_id', cursor);
+      const res = await fetch(`/api/related-ads?${params.toString()}`);
+      const json = await res.json();
+      const newItems: Ad[] = json.items || [];
+      if (newItems.length > 0) {
+        setItems(prev => [...prev, ...newItems]);
+        setCursor(json.nextCursor || newItems[newItems.length - 1].ad_archive_id);
+        setHasMore(Boolean(json.hasMore));
+      } else {
+        setHasMore(false);
+      }
+    } catch (e) {
+      setHasMore(false);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <div>
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-        {ads.map((ad) => (
+        {items.map((ad) => (
           <button
             key={ad.id}
             type="button"
@@ -46,6 +77,19 @@ export function RelatedAdsGrid({ ads, groupSize }: Props) {
           </button>
         ))}
       </div>
+
+      {hasMore && (
+        <div className="flex justify-center mt-4">
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loading}
+            className="px-4 py-2 rounded-md bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            {loading ? 'Loading…' : 'Load More'}
+          </button>
+        </div>
+      )}
 
       {selected && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
@@ -80,14 +124,30 @@ export function RelatedAdsGrid({ ads, groupSize }: Props) {
                 <div>
                   <div className="text-slate-900 font-semibold mb-2 text-sm">Full DB Fields</div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-900">
-                    {Object.entries(selected.raw).map(([key, value]) => (
-                      <div key={key} className="contents">
-                        <div className="text-slate-500 break-words">{key}</div>
-                        <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900 break-words">
-                          {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                    {Object.entries(selected.raw).map(([key, value]) => {
+                      const isLink = typeof value === 'string' && /^https?:\/\//i.test(value);
+                      const renderedValue = isLink ? (
+                        <a
+                          href={value as string}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-600 hover:text-blue-700 break-words"
+                        >
+                          {value as string}
+                        </a>
+                      ) : typeof value === 'object'
+                        ? JSON.stringify(value)
+                        : String(value);
+
+                      return (
+                        <div key={key} className="contents">
+                          <div className="text-slate-500 break-words">{key}</div>
+                          <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900 break-words">
+                            {renderedValue}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

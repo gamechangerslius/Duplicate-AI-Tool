@@ -8,7 +8,7 @@ interface AdCardProps {
 
 export function AdCard({ ad }: AdCardProps) {
   const isVideo = ad.display_format === 'VIDEO';
-  const imageUrl = getImageUrl(ad.ad_archive_id);
+  const imageUrl = ad.image_url || getImageUrl(ad.ad_archive_id);
 
   return (
     <div className="bg-white rounded-lg shadow-md hover:shadow-xl transition-shadow duration-300 overflow-hidden cursor-pointer">

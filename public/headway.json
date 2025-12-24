@@ -1,0 +1,62 @@
+[
+  {
+    "id": "headway-1",
+    "ad_archive_id": "headway-1",
+    "title": "Unlock Your Learning",
+    "page_name": "Headway App",
+    "ad_text": "Learn faster with bite-sized insights.",
+    "caption": "Try Headway today",
+    "business": "Headway",
+    "image_url": "https://via.placeholder.com/640x360.png?text=Headway+1",
+    "display_format": "IMAGE",
+    "created_at": "2025-01-01T00:00:00.000Z",
+    "vector_group": 10,
+    "duplicates_count": 42,
+    "meta_ad_url": "https://www.facebook.com/ads/library/?id=headway-1"
+  },
+  {
+    "id": "headway-2",
+    "ad_archive_id": "headway-2",
+    "title": "Grow Smarter Every Day",
+    "page_name": "Headway App",
+    "ad_text": "Daily learning made easy.",
+    "caption": "Join now",
+    "business": "Headway",
+    "image_url": "https://via.placeholder.com/640x360.png?text=Headway+2",
+    "display_format": "IMAGE",
+    "created_at": "2025-01-02T00:00:00.000Z",
+    "vector_group": 10,
+    "duplicates_count": 42,
+    "meta_ad_url": "https://www.facebook.com/ads/library/?id=headway-2"
+  },
+  {
+    "id": "headway-3",
+    "ad_archive_id": "headway-3",
+    "title": "Level Up Quickly",
+    "page_name": "Headway Learning",
+    "ad_text": "Top summaries at your fingertips.",
+    "caption": "Download the app",
+    "business": "Headway",
+    "image_url": "https://via.placeholder.com/640x360.png?text=Headway+3",
+    "display_format": "VIDEO",
+    "created_at": "2025-01-03T00:00:00.000Z",
+    "vector_group": 22,
+    "duplicates_count": 8,
+    "meta_ad_url": "https://www.facebook.com/ads/library/?id=headway-3"
+  },
+  {
+    "id": "headway-4",
+    "ad_archive_id": "headway-4",
+    "title": "Master More in Minutes",
+    "page_name": "Headway Learning",
+    "ad_text": "Bite-sized learning that fits your life.",
+    "caption": "Start for free",
+    "business": "Headway",
+    "image_url": "https://via.placeholder.com/640x360.png?text=Headway+4",
+    "display_format": "IMAGE",
+    "created_at": "2025-01-04T00:00:00.000Z",
+    "vector_group": -1,
+    "duplicates_count": 0,
+    "meta_ad_url": "https://www.facebook.com/ads/library/?id=headway-4"
+  }
+]

@@ -9,6 +9,8 @@ import { ViewToggle } from '@/components/ViewToggle';
 import { DUPLICATES_RANGES } from '@/lib/types';
 
 const PER_PAGE = 18;
+const HEADWAY_TABLE = 'duplicate_2data_base_blinkist';
+const HOLYWATER_TABLE = 'data_base';
 
 export default function Home() {
   const [displayFormat, setDisplayFormat] = useState<'ALL' | 'IMAGE' | 'VIDEO'>('ALL');
@@ -19,43 +21,61 @@ export default function Home() {
   const [totalPages, setTotalPages] = useState(1);
   
   // Filters
+  const [selectedBusiness, setSelectedBusiness] = useState<'Holywater' | 'Headway'>('Holywater');
   const [selectedPage, setSelectedPage] = useState<string>('');
   const [selectedDuplicates, setSelectedDuplicates] = useState<string>('');
+  const [selectedNiche, setSelectedNiche] = useState<string>('');
 
   async function loadPageNames() {
-    const pages = await fetchPageNames();
+    const tableName = selectedBusiness === 'Headway' ? HEADWAY_TABLE : HOLYWATER_TABLE;
+    const pages = await fetchPageNames(tableName);
     setPageNames(pages);
   }
 
   const loadAds = useCallback(async () => {
     setLoading(true);
-    
+
     const duplicatesRange = DUPLICATES_RANGES.find(r => r.label === selectedDuplicates);
     
+    // Map UI value "Romantic novels" to DB value "passion" and normalize; only apply for Holywater
+    const nicheForDbRaw = selectedBusiness === 'Headway'
+      ? ''
+      : (selectedNiche === 'romantic novels' ? 'passion' : selectedNiche);
+    const nicheForDb = nicheForDbRaw ? nicheForDbRaw.trim().toLowerCase() : '';
+    
+    console.log('Selected niche (UI):', selectedNiche);
+    console.log('Niche for DB:', nicheForDb);
+
     const { ads: data, total } = await fetchAds(
       {
+        business: selectedBusiness,
         pageName: selectedPage || undefined,
         duplicatesRange: duplicatesRange ? { min: duplicatesRange.min, max: duplicatesRange.max } : undefined,
+        competitorNiche: selectedBusiness === 'Headway' ? undefined : (nicheForDb || undefined),
       },
       {
         page: currentPage,
         perPage: PER_PAGE,
       }
     );
-    
-    console.log('Received ads:', data.length, 'Total:', total);
+
     setAds(data);
     setTotalPages(Math.ceil(total / PER_PAGE));
     setLoading(false);
-  }, [selectedPage, selectedDuplicates, currentPage]);
+  }, [selectedBusiness, selectedPage, selectedDuplicates, selectedNiche, currentPage]);
 
   useEffect(() => {
     loadPageNames();
-  }, []);
+  }, [selectedBusiness]);
 
   useEffect(() => {
     setCurrentPage(1); // Reset to page 1 when filters change
-  }, [selectedPage, selectedDuplicates]);
+  }, [selectedBusiness, selectedPage, selectedDuplicates, selectedNiche]);
+
+  useEffect(() => {
+    // Reset niche when switching business
+    setSelectedNiche('');
+  }, [selectedBusiness]);
 
   useEffect(() => {
     loadAds();
@@ -77,6 +97,17 @@ export default function Home() {
 
         {/* Filters */}
         <div className="mb-6 flex flex-wrap gap-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Genesis Business</label>
+            <select
+              value={selectedBusiness}
+              onChange={(e) => setSelectedBusiness(e.target.value as 'Holywater' | 'Headway')}
+              className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
+            >
+              <option value="Holywater">Holywater</option>
+              <option value="Headway">Headway</option>
+            </select>
+          </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">Page Name</label>
             <select
@@ -106,6 +137,25 @@ export default function Home() {
                   {range.label}
                 </option>
               ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Competitor Niche</label>
+            <select
+              value={selectedNiche}
+              onChange={(e) => setSelectedNiche(e.target.value)}
+              className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
+            >
+              {selectedBusiness === 'Headway' ? (
+                <option value="all">All available</option>
+              ) : (
+                <>
+                  <option value="">All</option>
+                  <option value="drama">Drama</option>
+                  <option value="passion">Romantic novels</option>
+                </>
+              )}
             </select>
           </div>
         </div>

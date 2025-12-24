@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 import { fetchAdByArchiveId, fetchRelatedAds, fetchGroupRepresentative, fetchAdRawByArchiveId, fetchGroupRepresentativeRaw, getImageUrl } from '@/lib/db';
 import { RelatedAdsGrid } from '@/components/RelatedAdsGrid';
 import Image from 'next/image';
@@ -16,25 +18,62 @@ export default async function ViewDetailsPage({ params }: PageProps) {
     notFound();
   }
 
-  const relatedAds = ad.vector_group && ad.vector_group !== -1
-    ? await fetchRelatedAds(ad.vector_group, ad.ad_archive_id)
+  const hasGroup = ad.vector_group !== -1 && ad.vector_group !== null && ad.vector_group !== undefined;
+  const tableName = (ad.raw && (ad.raw as any).__table) ? String((ad.raw as any).__table) : 'data_base';
+  const bucket = tableName === 'duplicate_2data_base_blinkist' ? 'blinkist2' : 'test2';
+  const relatedAds = hasGroup
+    ? await fetchRelatedAds(ad.vector_group as number, ad.ad_archive_id, tableName)
     : [];
 
-  const representative = ad.vector_group && ad.vector_group !== -1
-    ? await fetchGroupRepresentative(ad.vector_group)
+  const representative = hasGroup
+    ? await fetchGroupRepresentative(ad.vector_group as number, tableName)
     : null;
 
-  const imageUrl = getImageUrl(ad.ad_archive_id);
+  const imageUrl = ad.image_url ?? getImageUrl(ad.ad_archive_id, bucket);
 
   // Fetch full DB rows (all columns) for current ad and representative
-  const adRaw = await fetchAdRawByArchiveId(ad.ad_archive_id);
-  const representativeRaw = ad.vector_group && ad.vector_group !== -1
-    ? await fetchGroupRepresentativeRaw(ad.vector_group)
+  const adRaw = await fetchAdRawByArchiveId(ad.ad_archive_id, tableName);
+  const representativeRaw = hasGroup
+    ? await fetchGroupRepresentativeRaw(ad.vector_group as number, tableName)
     : null;
 
-  const groupSize = ad.vector_group && ad.vector_group !== -1
-    ? relatedAds.length + 1
-    : 1;
+  const groupSize = hasGroup ? relatedAds.length + 1 : 1;
+
+  // Build consolidated list of group members (current + related + representative) to derive page distribution
+  const groupMembersMap = new Map<string, any>();
+  groupMembersMap.set(ad.ad_archive_id, ad);
+  relatedAds.forEach(member => groupMembersMap.set(member.ad_archive_id, member));
+  if (representative && !groupMembersMap.has(representative.ad_archive_id)) {
+    groupMembersMap.set(representative.ad_archive_id, representative);
+  }
+  const groupMembers = Array.from(groupMembersMap.values());
+  const pageBreakdown = Array.from(
+    groupMembers.reduce((acc, member) => {
+      const key = member.page_name || 'Unknown';
+      acc.set(key, (acc.get(key) || 0) + 1);
+      return acc;
+    }, new Map<string, number>())
+  ) as Array<[string, number]>;
+
+  // Determine if multiple URLs (products) are present in the group
+  const urlBreakdown = Array.from(
+    groupMembers.reduce((acc, member) => {
+      const key = member.url || member.page_name || 'Unknown';
+      acc.set(key, (acc.get(key) || 0) + 1);
+      return acc;
+    }, new Map<string, number>())
+  ) as Array<[string, number]>;
+
+  const hasMultiplePages = pageBreakdown.length > 1;
+  const hasMultipleUrls = urlBreakdown.length > 1;
+
+  // Group related ads by URL (fallback to page_name) for separate blocks when multiple products exist
+  const relatedBySource = relatedAds.reduce((acc, item) => {
+    const key = item.url || item.page_name || 'Unknown';
+    if (!acc[key]) acc[key] = { page: item.page_name, url: item.url, items: [] as typeof relatedAds };
+    acc[key].items.push(item);
+    return acc;
+  }, {} as Record<string, { page?: string; url?: string; items: typeof relatedAds }>);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -82,7 +121,7 @@ export default async function ViewDetailsPage({ params }: PageProps) {
               <div className="flex items-center gap-4">
                 <div className="relative h-20 w-20 rounded-md overflow-hidden bg-slate-100">
                   <Image
-                    src={getImageUrl(representative.ad_archive_id)}
+                    src={representative.image_url ?? getImageUrl(representative.ad_archive_id, bucket)}
                     alt={representative.title || representative.page_name}
                     fill
                     className="object-cover"
@@ -99,6 +138,16 @@ export default async function ViewDetailsPage({ params }: PageProps) {
                   <div className="text-slate-600 text-xs mt-1">
                     Duplicates in group: {groupSize}
                   </div>
+                  {pageBreakdown.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mt-2 text-xs text-slate-700">
+                      {pageBreakdown.map(([name, count]) => (
+                        <span key={name} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 border border-slate-200">
+                          <span className="font-medium">{name}</span>
+                          <span className="text-slate-500">({count})</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -109,15 +158,33 @@ export default async function ViewDetailsPage({ params }: PageProps) {
                 <h3 className="text-slate-900 font-semibold mb-3">Representative DB Data</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
                   {Object.entries(representativeRaw)
-                    .filter(([key]) => key !== 'embedding_vec')
-                    .map(([key, value]) => (
-                      <div key={key} className="contents">
-                        <div className="text-slate-500 break-words">{key}</div>
-                        <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900">
-                          {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                    .filter(([key]) => !['embedding_vec', 'cards_json', 'cards_count', 'raw_json'].includes(key))
+                    .map(([key, value]) => {
+                      const isLink = typeof value === 'string' && /^https?:\/\//i.test(value);
+                      const renderedValue = isLink
+                        ? (
+                            <a
+                              href={value}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-600 hover:text-blue-700 break-words"
+                            >
+                              {value}
+                            </a>
+                          )
+                        : typeof value === 'object'
+                          ? JSON.stringify(value)
+                          : String(value);
+
+                      return (
+                        <div key={key} className="contents">
+                          <div className="text-slate-500 break-words">{key}</div>
+                          <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900">
+                            {renderedValue}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                 </div>
               </div>
             )}
@@ -129,7 +196,21 @@ export default async function ViewDetailsPage({ params }: PageProps) {
             <h2 className="text-2xl font-bold text-slate-900 mb-4">
               Related Ads ({relatedAds.length})
             </h2>
-            <RelatedAdsGrid ads={relatedAds} groupSize={groupSize} />
+
+            {hasMultiplePages || hasMultipleUrls ? (
+              <div className="space-y-6">
+                {Object.entries(relatedBySource).map(([key, payload]) => (
+                  <div key={key} className="bg-white rounded-xl p-4 shadow-sm border border-slate-200">
+                    <div className="text-slate-900 font-semibold mb-3">
+                      {payload.page || 'Unknown'} {payload.url ? `• ${payload.url}` : ''} ({payload.items.length})
+                    </div>
+                    <RelatedAdsGrid ads={payload.items} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} sourceTable={tableName} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <RelatedAdsGrid ads={relatedAds} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} sourceTable={tableName} />
+            )}
           </div>
         )}
 
