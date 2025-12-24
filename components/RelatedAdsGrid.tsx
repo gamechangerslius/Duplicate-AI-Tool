@@ -11,9 +11,10 @@ interface Props {
   vectorGroup: number;
   currentAdArchiveId: string;
   sourceTable?: string;
+  bucket?: string;
 }
 
-export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId, sourceTable }: Props) {
+export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId, sourceTable, bucket }: Props) {
   const [selected, setSelected] = useState<Ad | null>(null);
   const [items, setItems] = useState<Ad[]>(ads);
   const [loading, setLoading] = useState(false);
@@ -58,7 +59,7 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
             <div className="bg-white rounded-lg shadow-md hover:shadow-xl transition-shadow duration-300 overflow-hidden">
               <div className="relative aspect-square bg-slate-100">
                 <Image
-                  src={getImageUrl(ad.ad_archive_id)}
+                  src={ad.image_url || getImageUrl(ad.ad_archive_id, bucket)}
                   alt={ad.title || ad.page_name}
                   fill
                   className="object-cover group-hover:scale-105 transition-transform duration-300"
@@ -97,7 +98,7 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
             <div className="flex items-start gap-4 p-4 border-b border-slate-200">
               <div className="relative h-24 w-24 rounded-md overflow-hidden bg-slate-100 flex-shrink-0">
                 <Image
-                  src={getImageUrl(selected.ad_archive_id)}
+                  src={selected.image_url || getImageUrl(selected.ad_archive_id, bucket)}
                   alt={selected.title || selected.page_name}
                   fill
                   className="object-cover"

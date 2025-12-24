@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getImageUrl } from '@/lib/db';
 
 const HEADWAY_TABLE = 'duplicate_2data_base_blinkist';
 const HOLYWATER_TABLE = 'data_base';
+const HEADWAY_BUCKET = 'blinkist2';
+const HOLYWATER_BUCKET = 'test2';
 
 export async function GET(request: Request) {
   try {
@@ -19,6 +22,7 @@ export async function GET(request: Request) {
     const vector_group = Number(vgParam);
     const limit = Math.min(Math.max(Number(limitParam || '60'), 1), 500);
     const table = tableParam === HEADWAY_TABLE ? HEADWAY_TABLE : (tableParam === HOLYWATER_TABLE ? HOLYWATER_TABLE : HOLYWATER_TABLE);
+    const bucket = table === HEADWAY_TABLE ? HEADWAY_BUCKET : HOLYWATER_BUCKET;
 
     let q = supabase
       .from(table)
@@ -51,6 +55,7 @@ export async function GET(request: Request) {
       created_at: new Date().toISOString(),
       vector_group: ad.vector_group,
       meta_ad_url: `https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}`,
+      image_url: getImageUrl(ad.ad_archive_id, bucket),
     }));
 
     const nextCursor = items.length > 0 ? items[items.length - 1].ad_archive_id : null;

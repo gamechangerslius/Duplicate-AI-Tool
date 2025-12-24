@@ -204,12 +204,12 @@ export default async function ViewDetailsPage({ params }: PageProps) {
                     <div className="text-slate-900 font-semibold mb-3">
                       {payload.page || 'Unknown'} {payload.url ? `• ${payload.url}` : ''} ({payload.items.length})
                     </div>
-                    <RelatedAdsGrid ads={payload.items} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} sourceTable={tableName} />
+                    <RelatedAdsGrid ads={payload.items} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} sourceTable={tableName} bucket={bucket} />
                   </div>
                 ))}
               </div>
             ) : (
-              <RelatedAdsGrid ads={relatedAds} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} sourceTable={tableName} />
+              <RelatedAdsGrid ads={relatedAds} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} sourceTable={tableName} bucket={bucket} />
             )}
           </div>
         )}
