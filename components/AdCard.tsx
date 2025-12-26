@@ -36,6 +36,16 @@ export function AdCard({ ad }: AdCardProps) {
           {ad.title || 'Untitled'}
         </h3>
         <p className="text-xs text-slate-500 truncate">{ad.page_name}</p>
+        {(ad.start_date_formatted || ad.end_date_formatted) && (
+          <div className="mt-2 pt-2 border-t border-slate-200">
+            {ad.start_date_formatted && (
+              <p className="text-xs text-blue-600">Start: {ad.start_date_formatted}</p>
+            )}
+            {ad.end_date_formatted && (
+              <p className="text-xs text-blue-600">End: {ad.end_date_formatted}</p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

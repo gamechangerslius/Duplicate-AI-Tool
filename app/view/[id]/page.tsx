@@ -8,9 +8,10 @@ import { notFound } from 'next/navigation';
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams?: Record<string, string | string[] | undefined>;
 }
 
-export default async function ViewDetailsPage({ params }: PageProps) {
+export default async function ViewDetailsPage({ params, searchParams }: PageProps) {
   const { id: adArchiveId } = await params;
   const ad = await fetchAdByArchiveId(adArchiveId);
 
@@ -79,7 +80,23 @@ export default async function ViewDetailsPage({ params }: PageProps) {
     <div className="min-h-screen bg-slate-50">
       <div className="container mx-auto px-6 py-12 max-w-5xl">
         <Link 
-          href="/" 
+          href={(() => {
+            const allowed = ['business', 'page', 'niche', 'duplicates', 'format'];
+            const params = new URLSearchParams();
+            if (searchParams) {
+              for (const key of allowed) {
+                const v = searchParams[key];
+                if (Array.isArray(v)) {
+                  // preserve first occurrence for simplicity
+                  if (v[0]) params.set(key, String(v[0]));
+                } else if (typeof v === 'string' && v.length) {
+                  params.set(key, v);
+                }
+              }
+            }
+            const qs = params.toString();
+            return qs ? `/?${qs}` : '/';
+          })()} 
           className="inline-flex items-center text-blue-600 hover:text-blue-700 mb-6"
         >
           ← Back to Gallery
@@ -96,10 +113,32 @@ export default async function ViewDetailsPage({ params }: PageProps) {
             />
           </div>
           <div className="p-6">
-            <h1 className="text-3xl font-bold text-slate-900 mb-2">
-              {ad.title || 'Untitled'}
-            </h1>
-            <p className="text-slate-600 mb-4">{ad.page_name}</p>
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div className="flex-1">
+                <h1 className="text-3xl font-bold text-slate-900 mb-2">
+                  {ad.title || 'Untitled'}
+                </h1>
+                <p className="text-slate-600 mb-4">{ad.page_name}</p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <a
+                  href={`https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 transition whitespace-nowrap"
+                >
+                  🎬 View in Meta
+                </a>
+                <a
+                  href={`https://www.facebook.com/ads/library/`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-slate-200 text-slate-900 text-sm hover:bg-slate-300 transition whitespace-nowrap"
+                >
+                  📚 Ad Library
+                </a>
+              </div>
+            </div>
             
             {ad.vector_group === -1 && (
               <div className="inline-block bg-amber-100 text-amber-800 text-sm px-3 py-1 rounded-full">

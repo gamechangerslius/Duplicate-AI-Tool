@@ -11,6 +11,8 @@ export interface Ad {
   competitor_niche?: string;
   display_format: 'IMAGE' | 'VIDEO';
   created_at: string;
+  start_date_formatted?: string;
+  end_date_formatted?: string;
   vector_group: number | null;
   duplicates_count?: number;
   meta_ad_url?: string;
@@ -23,9 +25,3 @@ export interface FilterOptions {
   duplicatesRange?: string;
 }
 
-export const DUPLICATES_RANGES = [
-  { label: '>100', min: 100, max: Infinity },
-  { label: '50-90', min: 50, max: 90 },
-  { label: '30-50', min: 30, max: 50 },
-  { label: '<20', min: 0, max: 20 },
-];
