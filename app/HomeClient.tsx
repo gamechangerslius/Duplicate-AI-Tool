@@ -166,7 +166,12 @@ export default function HomeClient() {
     const stats = await fetchDuplicatesStats(
       selectedBusiness,
       selectedPage,
-      selectedBusiness === 'Headway' ? undefined : nicheForDb
+      selectedBusiness === 'Headway' ? undefined : nicheForDb,
+      {
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+        displayFormat,
+      }
     );
 
     setDuplicatesStats(stats);
@@ -188,7 +193,7 @@ export default function HomeClient() {
       clamp(a, stats.min, stats.max),
       clamp(b, stats.min, stats.max),
     ]);
-  }, [selectedBusiness, selectedPage, selectedNiche, dupsEverApplied]);
+  }, [selectedBusiness, selectedPage, selectedNiche, startDate, endDate, displayFormat, dupsEverApplied]);
 
   /**
    * Build duplicates filter for DB:

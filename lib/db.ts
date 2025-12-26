@@ -251,7 +251,8 @@ function getEffectiveTitle(title: string | null, cardsJson: any): string {
 export async function fetchDuplicatesStats(
   business?: string,
   pageName?: string,
-  competitorNiche?: string
+  competitorNiche?: string,
+  opts?: { startDate?: string; endDate?: string; displayFormat?: 'IMAGE' | 'VIDEO' | 'ALL' }
 ): Promise<{ min: number; max: number }> {
   try {
     const isHeadway = isHeadwayBusiness(business);
@@ -277,6 +278,21 @@ export async function fetchDuplicatesStats(
       }
     }
 
+    if (opts?.startDate) {
+      qMin = qMin.gte('start_date_formatted', opts.startDate);
+      qMax = qMax.gte('start_date_formatted', opts.startDate);
+    }
+
+    if (opts?.endDate) {
+      qMin = qMin.lte('end_date_formatted', opts.endDate);
+      qMax = qMax.lte('end_date_formatted', opts.endDate);
+    }
+
+    if (opts?.displayFormat && opts.displayFormat !== 'ALL') {
+      qMin = qMin.eq('display_format', opts.displayFormat);
+      qMax = qMax.eq('display_format', opts.displayFormat);
+    }
+
     const [{ data: dMin, error: eMin }, { data: dMax, error: eMax }] = await Promise.all([qMin, qMax]);
 
     if (!eMin && !eMax) {
@@ -289,7 +305,7 @@ export async function fetchDuplicatesStats(
     const baseTable = isHeadway ? HEADWAY_TABLE : HOLYWATER_TABLE;
     let qb = supabase
       .from(baseTable)
-      .select('vector_group')
+      .select('vector_group, display_format, start_date_formatted, end_date_formatted')
       .not('vector_group', 'is', null)
       .neq('vector_group', -1)
       .order('ad_archive_id', { ascending: true })
@@ -297,6 +313,9 @@ export async function fetchDuplicatesStats(
 
     if (pageName) qb = qb.eq('page_name', pageName);
     if (!isHeadway && competitorNiche) qb = qb.eq('competitor_niche', normalizeNiche(competitorNiche));
+    if (opts?.startDate) qb = qb.gte('start_date_formatted', opts.startDate);
+    if (opts?.endDate) qb = qb.lte('end_date_formatted', opts.endDate);
+    if (opts?.displayFormat && opts.displayFormat !== 'ALL') qb = qb.eq('display_format', opts.displayFormat);
 
     const { data, error } = await qb;
     if (error || !data) return { min: 0, max: 100 };
@@ -342,10 +361,21 @@ export async function fetchAds(
       endDate: filters?.endDate,
       page: pagination?.page,
       perPage: pagination?.perPage,
+      includeDates: true,
+    });
+
+    const cacheKeyWithoutDates = JSON.stringify({
+      business: filters?.business,
+      pageName: filters?.pageName,
+      duplicatesRange: filters?.duplicatesRange,
+      competitorNiche: filters?.competitorNiche,
+      page: pagination?.page,
+      perPage: pagination?.perPage,
+      includeDates: false,
     });
 
     const t = nowMs();
-    const cached = adsCacheMap.get(cacheKey);
+    const cached = adsCacheMap.get(cacheKey) || adsCacheMap.get(cacheKeyWithoutDates);
     if (cached && t - cached.time < ADS_CACHE_DURATION) {
       return cached.data;
     }
@@ -358,38 +388,77 @@ export async function fetchAds(
     const page = pagination?.page ?? 1;
     const perPage = pagination?.perPage ?? PER_PAGE;
 
-    let q = supabase
-      .from(table)
-      .select(
-        isHeadway
-          ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, duplicates_count, start_date_formatted, end_date_formatted'
-          : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, competitor_niche, url, cards_json, duplicates_count, start_date_formatted, end_date_formatted',
-        { count: 'estimated' }
-      )
-      .order('duplicates_count', { ascending: false })
-      .range((page - 1) * perPage, page * perPage - 1);
+    const selectFieldsWithDates = isHeadway
+      ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, duplicates_count, start_date_formatted, end_date_formatted'
+      : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, competitor_niche, url, cards_json, duplicates_count, start_date_formatted, end_date_formatted';
 
-    if (filters?.pageName) q = q.eq('page_name', filters.pageName);
+    const selectFieldsWithoutDates = isHeadway
+      ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, duplicates_count'
+      : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, competitor_niche, url, cards_json, duplicates_count';
 
-    if (!isHeadway && filters?.competitorNiche) {
-      const niche = normalizeNiche(filters.competitorNiche);
-      if (niche) q = q.eq('competitor_niche', niche);
+    const buildQuery = (withDateFields: boolean, applyDateFilters: boolean) => {
+      let query = supabase
+        .from(table)
+        .select(withDateFields ? selectFieldsWithDates : selectFieldsWithoutDates, { count: 'estimated' })
+        .order('duplicates_count', { ascending: false })
+        .range((page - 1) * perPage, page * perPage - 1);
+
+      if (filters?.pageName) query = query.eq('page_name', filters.pageName);
+
+      if (!isHeadway && filters?.competitorNiche) {
+        const niche = normalizeNiche(filters.competitorNiche);
+        if (niche) query = query.eq('competitor_niche', niche);
+      }
+
+      if (filters?.duplicatesRange) {
+        query = query.gte('duplicates_count', filters.duplicatesRange.min);
+        query = query.lte('duplicates_count', filters.duplicatesRange.max);
+      }
+
+      if (applyDateFilters && filters?.startDate && withDateFields) {
+        query = query.gte('start_date_formatted', filters.startDate);
+      }
+
+      if (applyDateFilters && filters?.endDate && withDateFields) {
+        query = query.lte('end_date_formatted', filters.endDate);
+      }
+
+      return query;
+    };
+
+    const runPrimary = () => buildQuery(true, true).then((res) => ({ ...res, withDateFields: true }));
+    const runWithoutDates = async () => {
+      try {
+        const res = await buildQuery(false, false);
+        return { ...res, withDateFields: false };
+      } catch (e) {
+        return { data: null, error: e as any, count: null, withDateFields: false };
+      }
+    };
+
+    let { data, error, count, withDateFields } = await runPrimary();
+
+    // Gracefully handle views missing start/end date columns by retrying without them.
+    const missingDateColumns =
+      error &&
+      (error.message?.toLowerCase().includes('start_date_formatted') ||
+        error.message?.toLowerCase().includes('end_date_formatted') ||
+        error.details?.toLowerCase().includes('start_date_formatted') ||
+        error.details?.toLowerCase().includes('end_date_formatted'));
+
+    if (missingDateColumns) {
+      const fallbackCacheKey = cacheKeyWithoutDates;
+      const cachedWithoutDates = adsCacheMap.get(cacheKeyWithoutDates);
+      if (cachedWithoutDates && t - cachedWithoutDates.time < ADS_CACHE_DURATION) {
+        return cachedWithoutDates.data;
+      }
+
+      const fallback = await runWithoutDates();
+      data = fallback.data;
+      error = fallback.error;
+      count = fallback.count;
+      withDateFields = fallback.withDateFields;
     }
-
-    if (filters?.duplicatesRange) {
-      q = q.gte('duplicates_count', filters.duplicatesRange.min);
-      q = q.lte('duplicates_count', filters.duplicatesRange.max);
-    }
-
-    if (filters?.startDate) {
-      q = q.gte('start_date_formatted', filters.startDate);
-    }
-
-    if (filters?.endDate) {
-      q = q.lte('end_date_formatted', filters.endDate);
-    }
-
-    const { data, error, count } = await q;
     if (!error && data) {
       // Resolve images (robust folders)
       const rows = data || [];
@@ -409,8 +478,8 @@ export async function fetchAds(
           competitor_niche: row.competitor_niche ?? null,
           display_format: row.display_format,
           created_at: new Date().toISOString(),
-          start_date_formatted: row.start_date_formatted ?? null,
-          end_date_formatted: row.end_date_formatted ?? null,
+          start_date_formatted: (row as any).start_date_formatted ?? null,
+          end_date_formatted: (row as any).end_date_formatted ?? null,
           vector_group: row.vector_group,
           duplicates_count: row.duplicates_count ?? 0,
           meta_ad_url: getMetaAdUrl(row.ad_archive_id),
@@ -418,7 +487,8 @@ export async function fetchAds(
         };
       });
       const returnValue = { ads, total: count ?? 0 };
-      adsCacheMap.set(cacheKey, { data: returnValue, time: nowMs() });
+      const cacheKeyToUse = withDateFields ? cacheKey : cacheKeyWithoutDates;
+      adsCacheMap.set(cacheKeyToUse, { data: returnValue, time: nowMs() });
       return returnValue;
     }
 
