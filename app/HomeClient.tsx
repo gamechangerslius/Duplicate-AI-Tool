@@ -296,9 +296,24 @@ export default function HomeClient() {
 
   // ===== Load duplicates stats when business/page/niche change =====
   useEffect(() => {
-    if (!isInitialized) return;
+    // Fetch slider bounds only after the current ads batch has finished loading
+    if (!isInitialized || loading) return;
     loadStats();
-  }, [isInitialized, loadStats]);
+  }, [isInitialized, loading, loadStats]);
+
+  // Apply duplicates from URL immediately (raw) so back navigation keeps the selected range.
+  useEffect(() => {
+    if (!isInitialized) return;
+    const raw = searchParams.get('duplicates');
+    if (!raw) return;
+
+    const parsed = parseDuplicatesParam(raw, duplicatesRangeDraft);
+    setDuplicatesRangeDraft(parsed);
+    setDuplicatesRangeApplied(parsed);
+    setDupsEverApplied(true);
+    setDupsDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInitialized, searchParams]);
 
   /**
    * Apply duplicates from URL AFTER stats are known.
@@ -542,6 +557,7 @@ export default function HomeClient() {
             </label>
             <input
               type="date"
+              lang="en"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
               className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
@@ -556,6 +572,7 @@ export default function HomeClient() {
             </label>
             <input
               type="date"
+              lang="en"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
               className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
@@ -597,6 +614,24 @@ export default function HomeClient() {
                     setDuplicatesRangeDraft(v);
                     setDupsDirty(true);
                     // Auto-apply happens via useEffect with debounce
+                  }}
+                  onChangeCommitted={(_e, newValue) => {
+                    const v = newValue as [number, number];
+                    setDuplicatesRangeDraft(v);
+                    setDuplicatesRangeApplied(v);
+                    setDupsDirty(false);
+                    setDupsEverApplied(true);
+
+                    // Persist immediately so back navigation keeps the range
+                    updateUrlParams({
+                      business: selectedBusiness,
+                      page: selectedPage,
+                      niche: selectedNiche,
+                      format: displayFormat,
+                      startDate,
+                      endDate,
+                      duplicatesApplied: v,
+                    });
                   }}
                   min={duplicatesStats.min}
                   max={duplicatesStats.max}
