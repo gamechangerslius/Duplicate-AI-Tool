@@ -213,9 +213,15 @@ function getTitleFromCards(cardsJson: any): string | null {
     }
 
     if (Array.isArray(cards) && cards.length > 0) {
+      // Try to find a good title from the first card
       const firstCard = cards[0];
       if (typeof firstCard === 'object' && firstCard !== null) {
-        return firstCard.title || firstCard.body || firstCard.name || firstCard.text || null;
+        // Try multiple fields in priority order
+        const text = firstCard.title || firstCard.body || firstCard.name || firstCard.text || null;
+        if (text && typeof text === 'string' && text.trim()) {
+          // Trim and limit length for display
+          return text.trim().substring(0, 200);
+        }
       }
     }
   } catch {
@@ -224,14 +230,38 @@ function getTitleFromCards(cardsJson: any): string | null {
   return null;
 }
 
-// Get effective title for an ad (prefers actual title, falls back to cards)
-function getEffectiveTitle(title: string | null, cardsJson: any): string {
-  if (title && title.trim() && !title.includes('{{') && title !== 'Untitled') {
+// Get effective title for an ad (prefers actual title, falls back to cards and other fields)
+function getEffectiveTitle(title: string | null, cardsJson: any, additionalFields?: { caption?: string | null; text?: string | null }): string {
+  // Check if title is valid and not a placeholder/template
+  const isValidTitle = 
+    title && 
+    title.trim() && 
+    !title.includes('{{') && // template placeholders
+    !title.toLowerCase().includes('untitled') && // case-insensitive check for "untitled"
+    title !== 'Untitled';
+  
+  if (isValidTitle) {
     return title;
   }
+  
+  // Try to get title from cards as first fallback
   const cardsTitle = getTitleFromCards(cardsJson);
-  if (cardsTitle) return cardsTitle;
-  return title || 'Untitled';
+  if (cardsTitle && cardsTitle.trim()) {
+    return cardsTitle;
+  }
+  
+  // Try caption or text fields if they exist and are valid
+  if (additionalFields) {
+    if (additionalFields.caption && typeof additionalFields.caption === 'string' && additionalFields.caption.trim()) {
+      return additionalFields.caption.trim().substring(0, 200);
+    }
+    if (additionalFields.text && typeof additionalFields.text === 'string' && additionalFields.text.trim()) {
+      return additionalFields.text.trim().substring(0, 200);
+    }
+  }
+  
+  // Last resort: use original title if available, otherwise "Untitled"
+  return (title && title.trim()) ? title : 'Untitled';
 }
 
 /**
@@ -466,7 +496,7 @@ export async function fetchAds(
         rows.map((row: any) => resolveCreativeUrlForBusiness(row.ad_archive_id, isHeadway))
       );
       const ads: Ad[] = rows.map((row: any, i: number) => {
-        const effectiveTitle = getEffectiveTitle(row.title, row.cards_json);
+        const effectiveTitle = getEffectiveTitle(row.title, row.cards_json, { caption: row.caption, text: row.text });
         return {
           id: row.ad_archive_id,
           ad_archive_id: row.ad_archive_id,
@@ -544,7 +574,7 @@ export async function fetchAds(
     );
 
     const ads: Ad[] = pageRows.map((row: any, i: number) => {
-      const effectiveTitle = getEffectiveTitle(row.title, row.cards_json);
+      const effectiveTitle = getEffectiveTitle(row.title, row.cards_json, { caption: row.caption, text: row.text });
       return {
         id: row.ad_archive_id,
         ad_archive_id: row.ad_archive_id,
@@ -594,7 +624,7 @@ export async function fetchAdByArchiveId(adArchiveId: string): Promise<Ad | null
     const bucket = isHeadway ? HEADWAY_BUCKET : HOLYWATER_BUCKET;
     const folder = isHeadway ? HEADWAY_FOLDER : HOLYWATER_FOLDER;
 
-    const effectiveTitle = getEffectiveTitle(data.title, (data as any).cards_json);
+    const effectiveTitle = getEffectiveTitle(data.title, (data as any).cards_json, { caption: (data as any).caption, text: (data as any).text });
 
     const creativeUrl = await getCreativeUrl(data.ad_archive_id, bucket, {
       folder,
@@ -667,7 +697,7 @@ export async function fetchRelatedAds(
 
   return rows.map((ad: any, i: number) => {
     const { embedding_vec, ...raw } = ad;
-    const effectiveTitle = getEffectiveTitle(ad.title, ad.cards_json);
+    const effectiveTitle = getEffectiveTitle(ad.title, ad.cards_json, { caption: ad.caption, text: ad.text });
     return {
       id: ad.ad_archive_id,
       ad_archive_id: ad.ad_archive_id,
@@ -713,7 +743,7 @@ export async function fetchGroupRepresentative(vectorGroup: number, tableName: s
     return null;
   }
 
-  const effectiveTitle = getEffectiveTitle(data.title, (data as any).cards_json);
+  const effectiveTitle = getEffectiveTitle(data.title, (data as any).cards_json, { caption: (data as any).caption, text: (data as any).text });
 
   const creativeUrl = await getCreativeUrl(data.ad_archive_id, bucket, {
     folder,
