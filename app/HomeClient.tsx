@@ -9,6 +9,11 @@ import { useSearchParams } from 'next/navigation';
 import Slider from '@mui/material/Slider';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
+import { DatePicker } from '@mui/x-date-pickers/DatePicker';
+import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
+import { enUS } from '@mui/x-date-pickers/locales';
+import dayjs from 'dayjs';
 
 import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/lib/db';
 import type { Ad } from '@/lib/types';
@@ -59,6 +64,15 @@ function normalizeNicheForDb(business: Business, nicheUi: string): string {
 
 export default function HomeClient() {
   const searchParams = useSearchParams();
+
+  return (
+    <LocalizationProvider dateAdapter={AdapterDayjs} localeText={enUS.components.MuiLocalizationProvider.defaultProps.localeText}>
+      <HomeClientContent searchParams={searchParams} />
+    </LocalizationProvider>
+  );
+}
+
+function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof useSearchParams> }) {
 
   // ===== UI display format filter (client-side) =====
   const [displayFormat, setDisplayFormat] = useState<DisplayFormat>('ALL');
@@ -551,32 +565,72 @@ export default function HomeClient() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Start Date
-              {startDate && <span className="ml-2 text-xs text-green-600">(active)</span>}
-            </label>
-            <input
-              type="date"
-              lang="en"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
-              placeholder="YYYY-MM-DD"
+            <label className="block text-sm font-medium text-slate-700 mb-2">Start Date</label>
+            <DatePicker
+              label=""
+              value={startDate ? dayjs(startDate) : null}
+              onChange={(date) => setStartDate(date ? date.format('YYYY-MM-DD') : '')}
+              slotProps={{
+                textField: {
+                  size: 'small',
+                  placeholder: 'YYYY-MM-DD',
+                  sx: {
+                    '& .MuiOutlinedInput-root': {
+                      borderColor: '#cbd5e1',
+                      backgroundColor: '#ffffff',
+                      '&:hover': {
+                        borderColor: '#94a3b8',
+                      },
+                      '&.Mui-focused': {
+                        backgroundColor: '#f8fafc',
+                      },
+                    },
+                    '& .MuiInputBase-input': {
+                      color: '#0f172a',
+                      fontSize: '0.875rem',
+                    },
+                    '& .MuiInputLabel-root': {
+                      color: '#475569',
+                      fontSize: '0.875rem',
+                    },
+                  },
+                },
+              }}
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              End Date
-              {endDate && <span className="ml-2 text-xs text-green-600">(active)</span>}
-            </label>
-            <input
-              type="date"
-              lang="en"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
-              placeholder="YYYY-MM-DD"
+            <label className="block text-sm font-medium text-slate-700 mb-2">End Date</label>
+            <DatePicker
+              label=""
+              value={endDate ? dayjs(endDate) : null}
+              onChange={(date) => setEndDate(date ? date.format('YYYY-MM-DD') : '')}
+              slotProps={{
+                textField: {
+                  size: 'small',
+                  placeholder: 'YYYY-MM-DD',
+                  sx: {
+                    '& .MuiOutlinedInput-root': {
+                      borderColor: '#cbd5e1',
+                      backgroundColor: '#ffffff',
+                      '&:hover': {
+                        borderColor: '#94a3b8',
+                      },
+                      '&.Mui-focused': {
+                        backgroundColor: '#f8fafc',
+                      },
+                    },
+                    '& .MuiInputBase-input': {
+                      color: '#0f172a',
+                      fontSize: '0.875rem',
+                    },
+                    '& .MuiInputLabel-root': {
+                      color: '#475569',
+                      fontSize: '0.875rem',
+                    },
+                  },
+                },
+              }}
             />
           </div>
         </div>
