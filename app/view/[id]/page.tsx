@@ -219,6 +219,52 @@ export default async function ViewDetailsPage({ params, searchParams }: PageProp
                 </div>
               </div>
             )}
+
+            {/* Additional Creatives (cards_json) */}
+            {ad.raw && (ad.raw as any).cards_json && (() => {
+              try {
+                const cards = JSON.parse((ad.raw as any).cards_json);
+                if (Array.isArray(cards) && cards.length > 0) {
+                  return (
+                    <div className="mt-4 bg-white rounded-xl p-4 shadow-sm">
+                      <h3 className="text-slate-900 font-semibold mb-3">Additional Creatives ({cards.length})</h3>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                        {cards.map((card: any, idx: number) => {
+                          const cardId = card.ad_archive_id || card.id;
+                          const imageUrl = cardId ? getImageUrl(cardId, bucket) : null;
+                          const linkUrl = card.link_url || imageUrl;
+                          return linkUrl && imageUrl ? (
+                            <a
+                              key={idx}
+                              href={linkUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="relative aspect-video bg-slate-100 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition group"
+                            >
+                              <Image
+                                src={imageUrl}
+                                alt={`Creative ${idx + 1}`}
+                                fill
+                                className="object-cover"
+                                unoptimized
+                              />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
+                                <span className="opacity-0 group-hover:opacity-100 text-white text-sm font-medium">
+                                  🔗 Open
+                                </span>
+                              </div>
+                            </a>
+                          ) : null;
+                        })}
+                      </div>
+                    </div>
+                  );
+                }
+              } catch (e) {
+                return null;
+              }
+              return null;
+            })()}
           </div>
         )}
 

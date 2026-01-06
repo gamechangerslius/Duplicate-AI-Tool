@@ -432,8 +432,8 @@ export async function fetchAds(
     const perPage = pagination?.perPage ?? PER_PAGE;
 
     const selectFieldsWithDates = isHeadway
-      ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, duplicates_count, start_date_formatted, end_date_formatted'
-      : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, competitor_niche, url, cards_json, duplicates_count, start_date_formatted, end_date_formatted';
+      ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, start_date_formatted, end_date_formatted, duplicates_count'
+      : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, competitor_niche, url, cards_json, start_date_formatted, end_date_formatted, duplicates_count';
 
     const selectFieldsWithoutDates = isHeadway
       ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, duplicates_count'
@@ -770,8 +770,8 @@ export async function fetchGroupRepresentative(vectorGroup: number, tableName: s
 
   // Headway table doesn't have created_at column
   const selectFields = isHeadway
-    ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, duplicates_count'
-    : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, created_at, duplicates_count';
+    ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json'
+    : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, created_at';
 
   const { data, error } = await supabase
     .from(tableName)
