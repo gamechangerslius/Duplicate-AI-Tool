@@ -9,15 +9,9 @@ const HOLYWATER_BUCKET = 'test2';
 // Default page size used when pagination does not specify one
 const PER_PAGE = 24;
 
-// IMPORTANT:
-// If your files are stored inside subfolders in Storage, set these:
-// e.g. "headway" means: blinkist2/headway/<ad_archive_id>.jpg
 const HEADWAY_FOLDER = '';   // <- set if needed
 const HOLYWATER_FOLDER = ''; // <- set if needed
-
-// Cache for pageNames (per table)
 const pageNamesCacheMap = new Map<string, { data: { name: string; count: number }[]; time: number }>();
-// Cache for ads fetches (per filter combination)
 const adsCacheMap = new Map<string, { data: { ads: any[]; total: number }; time: number }>();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 const ADS_CACHE_DURATION = 2 * 60 * 1000; // 2 minutes for ads
@@ -25,6 +19,10 @@ const ADS_CACHE_DURATION = 2 * 60 * 1000; // 2 minutes for ads
 // Cache for resolved storage URLs (so we don't hit Storage APIs repeatedly)
 const creativeUrlCache = new Map<string, { url: string | null; time: number }>();
 const CREATIVE_URL_CACHE_MS = 10 * 60 * 1000; // 10 minutes
+
+// Cache for group date ranges (min/max dates per vector_group)
+const groupDateRangeCache = new Map<string, { data: { minStartDate: string | null; maxEndDate: string | null }; time: number }>();
+const GROUP_DATE_CACHE_MS = 10 * 60 * 1000; // 10 minutes
 
 function nowMs() {
   return Date.now();
@@ -43,18 +41,6 @@ function normalizeNiche(niche?: string) {
   return s || '';
 }
 
-/**
- * Resolve a creative asset URL from Supabase Storage.
- * - Tries common extensions: png/jpg/jpeg/webp
- * - Works for BOTH public and private buckets:
- *   - public => uses getPublicUrl + HEAD check
- *   - private => falls back to createSignedUrl
- * - Supports optional folder inside bucket.
- *
- * Why this fixes "no images for Headway":
- * Your old getImageUrl always returned ".../<id>.png".
- * If Headway files are .jpg/.webp or bucket is private => images are broken.
- */
 export async function getCreativeUrl(
   adArchiveId: string,
   bucket: string,
@@ -260,24 +246,59 @@ function getEffectiveTitle(title: string | null, cardsJson: any, additionalField
     }
   }
   
-  // Last resort: use original title if available, otherwise "Untitled"
   return (title && title.trim()) ? title : 'Untitled';
 }
 
 /**
- * Fetch min/max duplicates count for slider range.
- *
- * IMPORTANT FIX:
- * Your old version paged through the WHOLE base table and counted groups in JS.
- * That will be slow and can time out.
- *
- * This version expects you already have views:
- * - v_holywater_group_cards
- * - v_headway_group_cards
- * each having "duplicates_count" column.
- *
- * If you don't have these views yet, this will fail. Create them in SQL first.
+ * Calculate min/max dates for a vector_group across all ads in the group.
+ * Returns the earliest start_date and latest end_date for all creatives in the group.
+ * Results are cached to avoid repeated database queries.
+ * Uses Supabase RPC function for optimized query.
  */
+async function getGroupDateRange(vectorGroup: number, tableName: string): Promise<{ minStartDate: string | null; maxEndDate: string | null }> {
+  if (vectorGroup === -1 || vectorGroup == null) {
+    return { minStartDate: null, maxEndDate: null };
+  }
+
+  const cacheKey = `${tableName}|${vectorGroup}`;
+  const cached = groupDateRangeCache.get(cacheKey);
+  const t = nowMs();
+  if (cached && t - cached.time < GROUP_DATE_CACHE_MS) {
+    console.log(`✅ Cache hit for group ${vectorGroup}: ${cached.data.minStartDate} to ${cached.data.maxEndDate}`);
+    return cached.data;
+  }
+
+  console.log(`🔍 Fetching group dates for vector_group=${vectorGroup}, table=${tableName}`);
+  
+  try {
+    // Use Supabase RPC function for optimized query
+    const { data, error } = await supabase.rpc('get_group_date_range', { 
+      target_table: tableName,
+      group_id: vectorGroup
+    });
+
+    console.log(`📥 RPC result for group ${vectorGroup}:`, { data, error });
+
+    if (error || !data || !data[0]) {
+      console.warn(`Failed to fetch group dates for ${vectorGroup} from ${tableName}:`, error);
+      return { minStartDate: null, maxEndDate: null };
+    }
+
+    const result = {
+      minStartDate: data[0].min_start || null,
+      maxEndDate: data[0].max_end || null,
+    };
+
+    console.log(`✅ Group ${vectorGroup} dates: ${result.minStartDate} to ${result.maxEndDate}`);
+    
+    groupDateRangeCache.set(cacheKey, { data: result, time: t });
+    return result;
+  } catch (err) {
+    console.error('Error in getGroupDateRange:', err);
+    return { minStartDate: null, maxEndDate: null };
+  }
+}
+
 export async function fetchDuplicatesStats(
   business?: string,
   pageName?: string,
@@ -287,10 +308,6 @@ export async function fetchDuplicatesStats(
   try {
     const isHeadway = isHeadwayBusiness(business);
     const table = isHeadway ? 'v_headway_group_cards' : 'v_holywater_group_cards';
-
-    // We can’t do MIN/MAX easily through PostgREST without RPC,
-    // so we approximate by requesting smallest and largest via ordering.
-    // This is fast because it's indexed + only returns 1 row each.
 
     let qMin = supabase.from(table).select('duplicates_count').order('duplicates_count', { ascending: true }).limit(1);
     let qMax = supabase.from(table).select('duplicates_count').order('duplicates_count', { ascending: false }).limit(1);
@@ -366,10 +383,6 @@ export async function fetchDuplicatesStats(
   }
 }
 
-/**
- * Fetch ads for grid.
- * Uses group-card views (1 row per vector_group) with duplicates_count already computed in DB.
- */
 export async function fetchAds(
   filters?: {
     business?: string;
@@ -495,8 +508,25 @@ export async function fetchAds(
       const creativeUrls = await Promise.all(
         rows.map((row: any) => resolveCreativeUrlForBusiness(row.ad_archive_id, isHeadway))
       );
+      
+      // Pre-fetch all unique group dates in parallel
+      // NOTE: getGroupDateRange needs base table, not view
+      const baseTable = isHeadway ? HEADWAY_TABLE : HOLYWATER_TABLE;
+      const groupDatesCache = new Map<number, { minStartDate: string | null; maxEndDate: string | null }>();
+      const uniqueVectorGroups = [...new Set(rows.map((r: any) => r.vector_group))];
+      await Promise.all(
+        uniqueVectorGroups.map(async (vg) => {
+          if (vg !== -1 && vg != null) {
+            const dates = await getGroupDateRange(vg, baseTable);
+            groupDatesCache.set(vg, dates);
+          }
+        })
+      );
+      
       const ads: Ad[] = rows.map((row: any, i: number) => {
         const effectiveTitle = getEffectiveTitle(row.title, row.cards_json, { caption: row.caption, text: row.text });
+        const groupDates = groupDatesCache.get(row.vector_group) || { minStartDate: null, maxEndDate: null };
+        
         return {
           id: row.ad_archive_id,
           ad_archive_id: row.ad_archive_id,
@@ -508,8 +538,8 @@ export async function fetchAds(
           competitor_niche: row.competitor_niche ?? null,
           display_format: row.display_format,
           created_at: new Date().toISOString(),
-          start_date_formatted: (row as any).start_date_formatted ?? null,
-          end_date_formatted: (row as any).end_date_formatted ?? null,
+          start_date_formatted: groupDates.minStartDate ?? (row as any).start_date_formatted ?? undefined,
+          end_date_formatted: groupDates.maxEndDate ?? (row as any).end_date_formatted ?? undefined,
           vector_group: row.vector_group,
           duplicates_count: row.duplicates_count ?? 0,
           meta_ad_url: getMetaAdUrl(row.ad_archive_id),
@@ -573,8 +603,22 @@ export async function fetchAds(
       pageRows.map((row: any) => resolveCreativeUrlForBusiness(row.ad_archive_id, isHeadway))
     );
 
+    // Pre-fetch all unique group dates in parallel
+    const groupDatesCache = new Map<number, { minStartDate: string | null; maxEndDate: string | null }>();
+    const uniqueVectorGroups = [...new Set(pageRows.map((r: any) => r.vector_group))];
+    await Promise.all(
+      uniqueVectorGroups.map(async (vg) => {
+        if (vg !== -1 && vg != null) {
+          const dates = await getGroupDateRange(vg, baseTable);
+          groupDatesCache.set(vg, dates);
+        }
+      })
+    );
+
     const ads: Ad[] = pageRows.map((row: any, i: number) => {
       const effectiveTitle = getEffectiveTitle(row.title, row.cards_json, { caption: row.caption, text: row.text });
+      const groupDates = groupDatesCache.get(row.vector_group) || { minStartDate: null, maxEndDate: null };
+      
       return {
         id: row.ad_archive_id,
         ad_archive_id: row.ad_archive_id,
@@ -586,6 +630,8 @@ export async function fetchAds(
         competitor_niche: row.competitor_niche ?? null,
         display_format: row.display_format,
         created_at: new Date().toISOString(),
+        start_date_formatted: groupDates.minStartDate ?? undefined,
+        end_date_formatted: groupDates.maxEndDate ?? undefined,
         vector_group: row.vector_group,
         duplicates_count: row.duplicates_count ?? 0,
         meta_ad_url: getMetaAdUrl(row.ad_archive_id),
@@ -633,6 +679,9 @@ export async function fetchAdByArchiveId(adArchiveId: string): Promise<Ad | null
     });
     const resolvedUrl = creativeUrl ?? (await resolveCreativeUrlForBusiness(data.ad_archive_id, isHeadway));
 
+    // Get group dates for the detail view
+    const groupDates = await getGroupDateRange(data.vector_group, table);
+
     const { embedding_vec, ...raw } = data as any;
     (raw as any).__table = table;
 
@@ -651,6 +700,8 @@ export async function fetchAdByArchiveId(adArchiveId: string): Promise<Ad | null
       duplicates_count: (data as any).duplicates_count,
       meta_ad_url: getMetaAdUrl(data.ad_archive_id),
       image_url: resolvedUrl ?? undefined,
+      start_date_formatted: groupDates.minStartDate ?? ((data as any).start_date_formatted ?? null),
+      end_date_formatted: groupDates.maxEndDate ?? ((data as any).end_date_formatted ?? null),
       raw,
     };
   }
@@ -665,17 +716,11 @@ export async function fetchAdById(id: string): Promise<Ad | null> {
 /**
  * Fetch related ads from same vector_group excluding current.
  * We keep this against base tables (needs all rows).
+ * NOTE: Do NOT resolve storage URLs here - let client use getImageUrl() instead.
+ * This avoids hundreds of HEAD/signedUrl requests during SSR.
  */
-export async function fetchRelatedAds(
-  vectorGroup: number,
-  currentAdArchiveId: string,
-  tableName: string = HOLYWATER_TABLE
-): Promise<Ad[]> {
+export async function fetchRelatedAds(vectorGroup: number, currentAdArchiveId: string, tableName: string): Promise<Ad[]> {
   if (vectorGroup === -1) return [];
-
-  const isHeadway = tableName === HEADWAY_TABLE;
-  const bucket = isHeadway ? HEADWAY_BUCKET : HOLYWATER_BUCKET;
-  const folder = isHeadway ? HEADWAY_FOLDER : HOLYWATER_FOLDER;
 
   const { data, error } = await supabase
     .from(tableName)
@@ -683,43 +728,38 @@ export async function fetchRelatedAds(
     .eq('vector_group', vectorGroup)
     .neq('ad_archive_id', currentAdArchiveId)
     .order('ad_archive_id', { ascending: true })
-    .limit(500);
+    .limit(60); 
 
-  if (error) {
-    console.error('Error fetching related ads:', JSON.stringify(error, null, 2));
-    return [];
-  }
+  if (error) return [];
 
-  const rows = data || [];
-  const creativeUrls = await Promise.all(
-    rows.map((row: any) => resolveCreativeUrlForBusiness(row.ad_archive_id, isHeadway))
-  );
+  // Get group dates once for all related ads
+  const groupDates = await getGroupDateRange(vectorGroup, tableName);
 
-  return rows.map((ad: any, i: number) => {
-    const { embedding_vec, ...raw } = ad;
-    const effectiveTitle = getEffectiveTitle(ad.title, ad.cards_json, { caption: ad.caption, text: ad.text });
-    return {
-      id: ad.ad_archive_id,
-      ad_archive_id: ad.ad_archive_id,
-      title: effectiveTitle,
-      page_name: ad.page_name,
-      ad_text: ad.ad_text ?? ad.text ?? null,
-      caption: ad.caption ?? ad.cta_text ?? null,
-      url: ad.url ?? null,
-      competitor_niche: ad.competitor_niche ?? null,
-      display_format: ad.display_format,
-      created_at: new Date().toISOString(),
-      vector_group: ad.vector_group,
-      duplicates_count: ad.duplicates_count,
-      meta_ad_url: getMetaAdUrl(ad.ad_archive_id),
-      image_url: creativeUrls[i] ?? undefined,
-      raw,
-    };
-  });
+  // DO NOT resolve storage URLs here - just return ad_archive_id
+  // Client will use getImageUrl(ad_archive_id, bucket)
+  return (data ?? []).map((ad: any) => ({
+    id: ad.ad_archive_id,
+    ad_archive_id: ad.ad_archive_id,
+    title: getEffectiveTitle(ad.title, ad.cards_json, { caption: ad.caption, text: ad.text }),
+    page_name: ad.page_name,
+    ad_text: ad.text ?? null,
+    caption: ad.caption ?? null,
+    url: ad.url ?? null,
+    display_format: ad.display_format,
+    vector_group: ad.vector_group,
+    start_date_formatted: groupDates.minStartDate,
+    end_date_formatted: groupDates.maxEndDate,
+    duplicates_count: ad.duplicates_count,
+    image_url: undefined, // Client will resolve via getImageUrl()
+    meta_ad_url: getMetaAdUrl(ad.ad_archive_id),
+    raw: ad,
+    created_at: new Date().toISOString(),
+  }));
 }
 
 /**
  * Deterministic representative: smallest ad_archive_id in group (base table).
+ * Excludes heavy fields like embedding_vec to reduce payload.
  */
 export async function fetchGroupRepresentative(vectorGroup: number, tableName: string = HOLYWATER_TABLE): Promise<Ad | null> {
   if (vectorGroup === -1) return null;
@@ -728,9 +768,14 @@ export async function fetchGroupRepresentative(vectorGroup: number, tableName: s
   const bucket = isHeadway ? HEADWAY_BUCKET : HOLYWATER_BUCKET;
   const folder = isHeadway ? HEADWAY_FOLDER : HOLYWATER_FOLDER;
 
+  // Headway table doesn't have created_at column
+  const selectFields = isHeadway
+    ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, duplicates_count'
+    : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, created_at, duplicates_count';
+
   const { data, error } = await supabase
     .from(tableName)
-    .select('*')
+    .select(selectFields)
     .eq('vector_group', vectorGroup)
     .order('ad_archive_id', { ascending: true })
     .limit(1)
@@ -743,75 +788,37 @@ export async function fetchGroupRepresentative(vectorGroup: number, tableName: s
     return null;
   }
 
-  const effectiveTitle = getEffectiveTitle(data.title, (data as any).cards_json, { caption: (data as any).caption, text: (data as any).text });
+  const rowData = data as any;
+  const effectiveTitle = getEffectiveTitle(rowData.title, rowData.cards_json, { caption: rowData.caption, text: rowData.text });
 
-  const creativeUrl = await getCreativeUrl(data.ad_archive_id, bucket, {
+  const creativeUrl = await getCreativeUrl(rowData.ad_archive_id, bucket, {
     folder,
     preferredExts: isHeadway ? ['jpg', 'jpeg', 'png'] : ['png', 'jpg', 'jpeg'],
     signedUrlTtlSeconds: 3600,
   });
 
-  const { embedding_vec, ...raw } = data as any;
+  const groupDates = await getGroupDateRange(vectorGroup, tableName);
+
   return {
-    id: data.ad_archive_id,
-    ad_archive_id: data.ad_archive_id,
+    id: rowData.ad_archive_id,
+    ad_archive_id: rowData.ad_archive_id,
     title: effectiveTitle,
-    ad_text: (data as any).ad_text ?? (data as any).text ?? null,
-    caption: (data as any).caption ?? (data as any).cta_text ?? null,
-    page_name: data.page_name,
-    url: (data as any).url ?? null,
-    competitor_niche: (data as any).competitor_niche ?? null,
-    display_format: data.display_format,
-    created_at: data.created_at || new Date().toISOString(),
-    vector_group: data.vector_group,
-    duplicates_count: (data as any).duplicates_count,
-    meta_ad_url: getMetaAdUrl(data.ad_archive_id),
+    ad_text: rowData.ad_text ?? rowData.text ?? null,
+    caption: rowData.caption ?? rowData.cta_text ?? null,
+    page_name: rowData.page_name,
+    url: rowData.url ?? null,
+    competitor_niche: rowData.competitor_niche ?? null,
+    display_format: rowData.display_format,
+    created_at: rowData.created_at || new Date().toISOString(),
+    start_date_formatted: groupDates.minStartDate ?? (rowData.start_date_formatted ?? null),
+    end_date_formatted: groupDates.maxEndDate ?? (rowData.end_date_formatted ?? null),
+    vector_group: rowData.vector_group,
+    duplicates_count: rowData.duplicates_count,
+    meta_ad_url: getMetaAdUrl(rowData.ad_archive_id),
     image_url: creativeUrl ?? undefined,
-    raw,
   };
 }
 
-// Fetch full raw row by ad_archive_id
-export async function fetchAdRawByArchiveId(adArchiveId: string, tableName: string = HOLYWATER_TABLE): Promise<Record<string, any> | null> {
-  const { data, error } = await supabase.from(tableName).select('*').eq('ad_archive_id', adArchiveId).single();
-
-  if (error || !data) {
-    if (error?.code !== 'PGRST116') {
-      console.error('Error fetching raw ad:', JSON.stringify(error, null, 2));
-    }
-    return null;
-  }
-  return data as Record<string, any>;
-}
-
-// Fetch full raw representative row for a vector_group
-export async function fetchGroupRepresentativeRaw(vectorGroup: number, tableName: string = HOLYWATER_TABLE): Promise<Record<string, any> | null> {
-  if (vectorGroup === -1) return null;
-
-  const { data, error } = await supabase
-    .from(tableName)
-    .select('*')
-    .eq('vector_group', vectorGroup)
-    .order('ad_archive_id', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (error || !data) {
-    if (error?.code !== 'PGRST116') {
-      console.error('Error fetching raw group representative:', JSON.stringify(error, null, 2));
-    }
-    return null;
-  }
-  return data as Record<string, any>;
-}
-
-/**
- * Fetch unique page names with count of unique creatives.
- *
- * IMPORTANT FIX:
- * Old version loaded ALL rows and grouped in JS => slow.
- * New version uses group-card views and uses "count" of rows in view per page_name.
- */
 export async function fetchPageNames(tableName: string = HOLYWATER_TABLE): Promise<{ name: string; count: number }[]> {
   const t = nowMs();
   const cached = pageNamesCacheMap.get(tableName);
@@ -822,9 +829,6 @@ export async function fetchPageNames(tableName: string = HOLYWATER_TABLE): Promi
   const isHeadway = tableName === HEADWAY_TABLE;
   const view = isHeadway ? 'v_headway_group_cards' : 'v_holywater_group_cards';
 
-  // We can’t do "group by" directly via PostgREST without RPC,
-  // but we can request page_name list and then count locally on the much smaller view result.
-  // (View has 1 row per vector_group, so it’s already smaller.)
   const { data, error } = await supabase
     .from(view)
     .select('page_name')

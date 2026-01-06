@@ -11,8 +11,8 @@ export interface Ad {
   competitor_niche?: string;
   display_format: 'IMAGE' | 'VIDEO';
   created_at: string;
-  start_date_formatted?: string;
-  end_date_formatted?: string;
+  start_date_formatted: string | null | undefined;
+  end_date_formatted: string | null | undefined;
   vector_group: number | null;
   duplicates_count?: number;
   meta_ad_url?: string;

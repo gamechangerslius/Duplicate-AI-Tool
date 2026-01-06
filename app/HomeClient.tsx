@@ -31,10 +31,6 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-/**
- * Parse "duplicates" URL param in form "min-max"
- * Example: "10-200" -> [10,200]
- */
 function parseDuplicatesParam(
   raw: string | null,
   fallback: [number, number]
@@ -209,11 +205,6 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
     ]);
   }, [selectedBusiness, selectedPage, selectedNiche, startDate, endDate, displayFormat, dupsEverApplied]);
 
-  /**
-   * Build duplicates filter for DB:
-   * - If user never applied => treat as "no filter" (very wide range)
-   * - If applied => use applied range
-   */
   const buildDuplicatesFilter = useCallback(() => {
     if (!dupsEverApplied) return { min: 0, max: 999999 };
     return { min: duplicatesRangeApplied[0], max: duplicatesRangeApplied[1] };

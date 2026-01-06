@@ -27,13 +27,14 @@ export function AdCard({ ad }: AdCardProps) {
         )}
         {ad.duplicates_count && ad.duplicates_count > 0 && (
           <div className="absolute top-2 left-2 bg-violet-600 text-white text-xs px-2 py-1 rounded-full font-medium">
-            {ad.duplicates_count} duplicates
+            {ad.duplicates_count} duplicates | 
           </div>
         )}
       </div>
       <div className="p-3">
         <h3 className="font-semibold text-slate-900 text-sm mb-1 truncate">
-          {ad.title || 'Untitled'}
+          {ad.title || 'Untitled'}<br></br>
+          
         </h3>
         <p className="text-xs text-slate-500 truncate">{ad.page_name}</p>
         {(ad.start_date_formatted || ad.end_date_formatted) && (
@@ -43,6 +44,9 @@ export function AdCard({ ad }: AdCardProps) {
             )}
             {ad.end_date_formatted && (
               <p className="text-xs text-blue-600">End: {ad.end_date_formatted}</p>
+            )}
+            {ad.vector_group && (
+              <p className="text-xs text-purple-600">Vector group: {ad.vector_group}</p>
             )}
           </div>
         )}

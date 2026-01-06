@@ -73,7 +73,7 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
                 <div className="text-[11px] text-slate-600 truncate" title={ad.ad_archive_id}>
                   {ad.ad_archive_id}
                 </div>
-                <div className="text-[11px] text-slate-500 truncate" title={ad.start_date_formatted}> </div>
+                <div className="text-[11px] text-slate-500 truncate" title={ad.start_date_formatted || undefined}> </div>
               </div>
             </div>
           </button>

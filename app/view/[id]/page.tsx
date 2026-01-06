@@ -1,6 +1,6 @@
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-import { fetchAdByArchiveId, fetchRelatedAds, fetchGroupRepresentative, fetchAdRawByArchiveId, fetchGroupRepresentativeRaw, getImageUrl } from '@/lib/db';
+import { fetchAdByArchiveId, fetchRelatedAds, fetchGroupRepresentative, getImageUrl } from '@/lib/db';
 import { RelatedAdsGrid } from '@/components/RelatedAdsGrid';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -22,22 +22,14 @@ export default async function ViewDetailsPage({ params, searchParams }: PageProp
   const hasGroup = ad.vector_group !== -1 && ad.vector_group !== null && ad.vector_group !== undefined;
   const tableName = (ad.raw && (ad.raw as any).__table) ? String((ad.raw as any).__table) : 'data_base';
   const bucket = tableName === 'duplicate_2data_base_blinkist' ? 'blinkist2' : 'test2';
-  const relatedAds = hasGroup
-    ? await fetchRelatedAds(ad.vector_group as number, ad.ad_archive_id, tableName)
-    : [];
 
-  const representative = hasGroup
-    ? await fetchGroupRepresentative(ad.vector_group as number, tableName)
-    : null;
+  // Parallelize all remaining queries
+  const [relatedAds, representative] = await Promise.all([
+    hasGroup ? fetchRelatedAds(ad.vector_group as number, ad.ad_archive_id, tableName) : Promise.resolve([]),
+    hasGroup ? fetchGroupRepresentative(ad.vector_group as number, tableName) : Promise.resolve(null),
+  ]);
 
   const imageUrl = ad.image_url ?? getImageUrl(ad.ad_archive_id, bucket);
-
-  // Fetch full DB rows (all columns) for current ad and representative
-  const adRaw = await fetchAdRawByArchiveId(ad.ad_archive_id, tableName);
-  const representativeRaw = hasGroup
-    ? await fetchGroupRepresentativeRaw(ad.vector_group as number, tableName)
-    : null;
-
   const groupSize = hasGroup ? relatedAds.length + 1 : 1;
 
   // Build consolidated list of group members (current + related + representative) to derive page distribution
@@ -192,11 +184,11 @@ export default async function ViewDetailsPage({ params, searchParams }: PageProp
             </div>
 
             {/* Representative DB Data (excluding embedding_vec) */}
-            {representativeRaw && (
+            {ad.raw && (
               <div className="mt-4 bg-white rounded-xl p-4 shadow-sm">
                 <h3 className="text-slate-900 font-semibold mb-3">Representative DB Data</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-                  {Object.entries(representativeRaw)
+                  {Object.entries(ad.raw as Record<string, any>)
                     .filter(([key]) => !['embedding_vec', 'cards_json', 'cards_count', 'raw_json'].includes(key))
                     .map(([key, value]) => {
                       const isLink = typeof value === 'string' && /^https?:\/\//i.test(value);
