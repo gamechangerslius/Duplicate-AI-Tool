@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { getImageUrl } from '@/lib/db';
+import { getImageUrl } from '@/utils/supabase/db';
 
 const HEADWAY_TABLE = 'duplicate_2data_base_blinkist';
 const HOLYWATER_TABLE = 'data_base';

@@ -1,5 +1,5 @@
 import { type Ad } from '@/lib/types';
-import { getImageUrl } from '@/lib/db';
+import { getImageUrl } from '@/utils/supabase/db';
 import Image from 'next/image';
 
 interface AdCardProps {

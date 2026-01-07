@@ -1,5 +1,5 @@
-import { supabase } from './supabase';
-import type { Ad } from './types';
+import { supabase } from '../../lib/supabase';
+import type { Ad } from '../../lib/types';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const HEADWAY_TABLE = 'duplicate_2data_base_blinkist';
@@ -768,10 +768,8 @@ export async function fetchGroupRepresentative(vectorGroup: number, tableName: s
   const bucket = isHeadway ? HEADWAY_BUCKET : HOLYWATER_BUCKET;
   const folder = isHeadway ? HEADWAY_FOLDER : HOLYWATER_FOLDER;
 
-  // Headway table doesn't have created_at column
-  const selectFields = isHeadway
-    ? 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json'
-    : 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json, created_at';
+  // Both tables don't have created_at column in their base tables
+  const selectFields = 'ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, cards_json';
 
   const { data, error } = await supabase
     .from(tableName)
@@ -809,7 +807,7 @@ export async function fetchGroupRepresentative(vectorGroup: number, tableName: s
     url: rowData.url ?? null,
     competitor_niche: rowData.competitor_niche ?? null,
     display_format: rowData.display_format,
-    created_at: rowData.created_at || new Date().toISOString(),
+    created_at: new Date().toISOString(),
     start_date_formatted: groupDates.minStartDate ?? (rowData.start_date_formatted ?? null),
     end_date_formatted: groupDates.maxEndDate ?? (rowData.end_date_formatted ?? null),
     vector_group: rowData.vector_group,

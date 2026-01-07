@@ -1,6 +1,6 @@
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-import { fetchAdByArchiveId, fetchRelatedAds, fetchGroupRepresentative, getImageUrl } from '@/lib/db';
+import { fetchAdByArchiveId, fetchRelatedAds, fetchGroupRepresentative, getImageUrl } from '@/utils/supabase/db';
 import { RelatedAdsGrid } from '@/components/RelatedAdsGrid';
 import Image from 'next/image';
 import Link from 'next/link';

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Image from 'next/image';
 import type { Ad } from '@/lib/types';
-import { getImageUrl } from '@/lib/db';
+import { getImageUrl } from '@/utils/supabase/db';
 
 interface Props {
   ads: Ad[];

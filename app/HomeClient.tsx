@@ -15,7 +15,7 @@ import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
 import { enUS } from '@mui/x-date-pickers/locales';
 import dayjs from 'dayjs';
 
-import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/lib/db';
+import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/utils/supabase/db';
 import type { Ad } from '@/lib/types';
 import { AdCard } from '@/components/AdCard';
 import { ViewToggle } from '@/components/ViewToggle';
