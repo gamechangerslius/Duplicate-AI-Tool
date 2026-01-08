@@ -5,6 +5,7 @@ import { RelatedAdsGrid } from '@/components/RelatedAdsGrid';
 import Image from 'next/image';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { createClient } from '@/utils/supabase/server';
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -13,24 +14,61 @@ interface PageProps {
 
 export default async function ViewDetailsPage({ params, searchParams }: PageProps) {
   const { id: adArchiveId } = await params;
-  const ad = await fetchAdByArchiveId(adArchiveId);
+  
+  // Get user's business
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  
+  if (!user) {
+    notFound();
+  }
+
+  // Get businessId from URL params or use first business
+  let businessId: string | null = null;
+  if (typeof searchParams?.businessId === 'string') {
+    businessId = searchParams.businessId;
+  } else {
+    const { data: businesses } = await supabase
+      .from('businesses')
+      .select('id, slug')
+      .eq('owner_id', user.id);
+    
+    if (!businesses || businesses.length === 0) {
+      notFound();
+    }
+    businessId = businesses[0].id;
+  }
+
+  // Get business details
+  const { data: business } = await supabase
+    .from('businesses')
+    .select('id, slug')
+    .eq('id', businessId)
+    .single();
+
+  if (!business) {
+    notFound();
+  }
+
+  const ad = await fetchAdByArchiveId(adArchiveId, business.id);
 
   if (!ad) {
     notFound();
   }
 
   const hasGroup = ad.vector_group !== -1 && ad.vector_group !== null && ad.vector_group !== undefined;
-  const tableName = (ad.raw && (ad.raw as any).__table) ? String((ad.raw as any).__table) : 'data_base';
-  const bucket = tableName === 'duplicate_2data_base_blinkist' ? 'blinkist2' : 'test2';
 
   // Parallelize all remaining queries
   const [relatedAds, representative] = await Promise.all([
-    hasGroup ? fetchRelatedAds(ad.vector_group as number, ad.ad_archive_id, tableName) : Promise.resolve([]),
-    hasGroup ? fetchGroupRepresentative(ad.vector_group as number, tableName) : Promise.resolve(null),
+    hasGroup ? fetchRelatedAds(ad.vector_group as number, ad.ad_archive_id, business.id) : Promise.resolve([]),
+    hasGroup ? fetchGroupRepresentative(ad.vector_group as number, business.id) : Promise.resolve(null),
   ]);
 
-  const imageUrl = ad.image_url ?? getImageUrl(ad.ad_archive_id, bucket);
-  const groupSize = hasGroup ? relatedAds.length + 1 : 1;
+  const imageUrl = ad.image_url ?? getImageUrl(ad.ad_archive_id, business.slug);
+  
+  // Use real duplicates_count from database, fallback to calculated size
+  const actualDuplicatesCount = ad.duplicates_count || (hasGroup ? relatedAds.length + 1 : 1);
+  const groupSize = actualDuplicatesCount;
 
   // Build consolidated list of group members (current + related + representative) to derive page distribution
   const groupMembersMap = new Map<string, any>();
@@ -152,7 +190,7 @@ export default async function ViewDetailsPage({ params, searchParams }: PageProp
               <div className="flex items-center gap-4">
                 <div className="relative h-20 w-20 rounded-md overflow-hidden bg-slate-100">
                   <Image
-                    src={representative.image_url ?? getImageUrl(representative.ad_archive_id, bucket)}
+                    src={representative.image_url ?? getImageUrl(representative.ad_archive_id, business.slug)}
                     alt={representative.title || representative.page_name}
                     fill
                     className="object-cover"
@@ -231,7 +269,7 @@ export default async function ViewDetailsPage({ params, searchParams }: PageProp
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                         {cards.map((card: any, idx: number) => {
                           const cardId = card.ad_archive_id || card.id;
-                          const imageUrl = cardId ? getImageUrl(cardId, bucket) : null;
+                          const imageUrl = cardId ? getImageUrl(cardId, business.slug) : null;
                           const linkUrl = card.link_url || imageUrl;
                           return linkUrl && imageUrl ? (
                             <a
@@ -281,12 +319,12 @@ export default async function ViewDetailsPage({ params, searchParams }: PageProp
                     <div className="text-slate-900 font-semibold mb-3">
                       {payload.page || 'Unknown'} {payload.url ? `• ${payload.url}` : ''} ({payload.items.length})
                     </div>
-                    <RelatedAdsGrid ads={payload.items} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} sourceTable={tableName} bucket={bucket} />
+                    <RelatedAdsGrid ads={payload.items} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} businessId={business.id} businessSlug={business.slug} />
                   </div>
                 ))}
               </div>
             ) : (
-              <RelatedAdsGrid ads={relatedAds} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} sourceTable={tableName} bucket={bucket} />
+              <RelatedAdsGrid ads={relatedAds} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} businessId={business.id} businessSlug={business.slug} />
             )}
           </div>
         )}

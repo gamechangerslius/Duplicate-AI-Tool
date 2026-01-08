@@ -1,11 +1,11 @@
 export interface Ad {
   id: string;
   ad_archive_id: string;
+  business_id?: string;
   title?: string;
   page_name: string;
   ad_text?: string;
   caption?: string;
-  business?: string;
   image_url?: string;
   url?: string;
   competitor_niche?: string;
@@ -20,7 +20,7 @@ export interface Ad {
 }
 
 export interface FilterOptions {
-  business?: string;
+  businessId?: string;
   pageName?: string;
   duplicatesRange?: string;
 }

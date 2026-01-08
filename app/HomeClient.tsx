@@ -19,12 +19,11 @@ import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/utils/supabase
 import type { Ad } from '@/lib/types';
 import { AdCard } from '@/components/AdCard';
 import { ViewToggle } from '@/components/ViewToggle';
+import { UserMenu } from '@/components/UserMenu';
+import { createClient } from '@/utils/supabase/client';
 
 const PER_PAGE = 24;
-const HEADWAY_TABLE = 'duplicate_2data_base_blinkist';
-const HOLYWATER_TABLE = 'data_base';
 
-type Business = 'Holywater' | 'Headway';
 type DisplayFormat = 'ALL' | 'IMAGE' | 'VIDEO';
 
 function clamp(n: number, min: number, max: number) {
@@ -44,14 +43,7 @@ function parseDuplicatesParam(
   return a <= b ? [a, b] : [b, a];
 }
 
-/**
- * Normalize niche for DB:
- * - Headway: no niche filter
- * - Holywater: allow "drama" or "passion"
- * - UI might send "romantic novels" -> map to "passion"
- */
-function normalizeNicheForDb(business: Business, nicheUi: string): string {
-  if (business === 'Headway') return '';
+function normalizeNicheForDb(nicheUi: string): string {
   const s = (nicheUi || '').trim().toLowerCase();
   if (!s) return '';
   if (s === 'romantic novels') return 'passion';
@@ -70,7 +62,6 @@ export default function HomeClient() {
 
 function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof useSearchParams> }) {
 
-  // ===== UI display format filter (client-side) =====
   const [displayFormat, setDisplayFormat] = useState<DisplayFormat>('ALL');
 
   // ===== Data =====
@@ -89,22 +80,19 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
   const [isInitialized, setIsInitialized] = useState(false);
   const filterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const duplicatesTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const initRef = useRef(false);
+
+  // ===== Business ID and list =====
+  const [businessId, setBusinessId] = useState<string | null>(null);
+  const [businesses, setBusinesses] = useState<{ id: string; slug: string; name?: string }[]>([]);
 
   // ===== Filters =====
-  const [selectedBusiness, setSelectedBusiness] = useState<Business>('Holywater');
   const [selectedPage, setSelectedPage] = useState<string>('');
   const [selectedNiche, setSelectedNiche] = useState<string>('');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
 
-  /**
-   * Duplicates slider model (proper UX):
-   * - stats = min/max boundaries from DB
-   * - draft = what user moves on slider (does NOT trigger queries)
-   * - applied = what is used in queries
-   * - dupsDirty = draft changed but not applied yet
-   * - dupsEverApplied = user clicked apply at least once (when false => treat as "no duplicates filter")
-   */
+  // ===== Duplicates model =====
   const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({
     min: 0,
     max: 0,
@@ -114,16 +102,12 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
   const [dupsDirty, setDupsDirty] = useState(false);
   const [dupsEverApplied, setDupsEverApplied] = useState(false);
 
-  // ===== Helpers =====
-  const tableName = selectedBusiness === 'Headway' ? HEADWAY_TABLE : HOLYWATER_TABLE;
-
   /**
    * Update URL params (without pushing history).
    * Note: we intentionally only include duplicates when the user has applied them.
    */
   const updateUrlParams = useCallback(
     (next: {
-      business: Business;
       page: string;
       niche: string;
       format?: DisplayFormat;
@@ -133,7 +117,6 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
     }) => {
       const params = new URLSearchParams();
 
-      if (next.business !== 'Holywater') params.set('business', next.business);
       if (next.page) params.set('page', next.page);
 
       // Only include niche if meaningful (non-empty string)
@@ -158,12 +141,13 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
   );
 
   /**
-   * Load page names for the selected business/table.
+   * Load page names for the selected business.
    */
   const loadPageNames = useCallback(async () => {
-    const pages = await fetchPageNames(tableName);
+    if (!businessId) return;
+    const pages = await fetchPageNames(businessId);
     setPageNames(pages);
-  }, [tableName]);
+  }, [businessId]);
 
   /**
    * Load duplicates stats (min/max) for current business/page/niche.
@@ -171,12 +155,13 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
    * If duplicates were applied, we clamp ranges into new bounds.
    */
   const loadStats = useCallback(async () => {
-    const nicheForDb = normalizeNicheForDb(selectedBusiness, selectedNiche) || undefined;
+    if (!businessId) return;
+    const nicheForDb = selectedNiche ? normalizeNicheForDb(selectedNiche) : undefined;
 
     const stats = await fetchDuplicatesStats(
-      selectedBusiness,
+      businessId,
       selectedPage,
-      selectedBusiness === 'Headway' ? undefined : nicheForDb,
+      nicheForDb,
       {
         startDate: startDate || undefined,
         endDate: endDate || undefined,
@@ -203,7 +188,7 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
       clamp(a, stats.min, stats.max),
       clamp(b, stats.min, stats.max),
     ]);
-  }, [selectedBusiness, selectedPage, selectedNiche, startDate, endDate, displayFormat, dupsEverApplied]);
+  }, [businessId, selectedPage, selectedNiche, startDate, endDate, displayFormat, dupsEverApplied]);
 
   const buildDuplicatesFilter = useCallback(() => {
     if (!dupsEverApplied) return { min: 0, max: 999999 };
@@ -214,44 +199,60 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
    * Load first page of ads for current filters.
    */
   const loadAds = useCallback(async () => {
+    if (!businessId) {
+      console.log('loadAds: businessId not ready');
+      return;
+    }
     setLoading(true);
 
-    const nicheForDbRaw = normalizeNicheForDb(selectedBusiness, selectedNiche);
-    const nicheForDb = nicheForDbRaw ? nicheForDbRaw : undefined;
+    const nicheForDb = selectedNiche ? normalizeNicheForDb(selectedNiche) : undefined;
+    console.log('loadAds: calling fetchAds with filters', {
+      businessId,
+      pageName: selectedPage,
+      competitorNiche: nicheForDb,
+      startDate,
+      endDate,
+    });
 
-    const { ads: data, total } = await fetchAds(
-      {
-        business: selectedBusiness,
-        pageName: selectedPage || undefined,
-        duplicatesRange: buildDuplicatesFilter(),
-        competitorNiche: selectedBusiness === 'Headway' ? undefined : nicheForDb,
-        startDate: startDate || undefined,
-        endDate: endDate || undefined,
-      },
-      { page: 1, perPage: PER_PAGE }
-    );
+    try {
+      const { ads: data, total } = await fetchAds(
+        {
+          businessId: businessId,
+          pageName: selectedPage || undefined,
+          duplicatesRange: buildDuplicatesFilter(),
+          competitorNiche: nicheForDb,
+          startDate: startDate || undefined,
+          endDate: endDate || undefined,
+        },
+        { page: 1, perPage: PER_PAGE }
+      );
 
-    setAds(data);
-    setTotalPages(Math.ceil(total / PER_PAGE));
-    setCurrentPage(1);
-    setLoading(false);
-  }, [selectedBusiness, selectedPage, selectedNiche, startDate, endDate, buildDuplicatesFilter]);
+      console.log('loadAds: received data', { count: data.length, total });
+      setAds(data);
+      setTotalPages(Math.ceil(total / PER_PAGE));
+      setCurrentPage(1);
+    } catch (err) {
+      console.error('loadAds error:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [businessId, selectedPage, selectedNiche, startDate, endDate, buildDuplicatesFilter]);
 
   /**
    * Load next page of ads.
    */
   const loadMoreAds = useCallback(async () => {
+    if (!businessId) return;
     setLoadingMore(true);
 
-    const nicheForDbRaw = normalizeNicheForDb(selectedBusiness, selectedNiche);
-    const nicheForDb = nicheForDbRaw ? nicheForDbRaw : undefined;
+    const nicheForDb = selectedNiche ? normalizeNicheForDb(selectedNiche) : undefined;
 
     const { ads: data, total } = await fetchAds(
       {
-        business: selectedBusiness,
+        businessId: businessId,
         pageName: selectedPage || undefined,
         duplicatesRange: buildDuplicatesFilter(),
-        competitorNiche: selectedBusiness === 'Headway' ? undefined : nicheForDb,
+        competitorNiche: nicheForDb,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
       },
@@ -262,42 +263,85 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
     setCurrentPage((prev) => prev + 1);
     setTotalPages(Math.ceil(total / PER_PAGE));
     setLoadingMore(false);
-  }, [selectedBusiness, selectedPage, selectedNiche, currentPage, startDate, endDate, buildDuplicatesFilter]);
+  }, [businessId, selectedPage, selectedNiche, currentPage, startDate, endDate, buildDuplicatesFilter]);
 
-  // ===== Init filters from URL (once searchParams are available) =====
+  // ===== Fetch businessId on mount and init filters from URL =====
   useEffect(() => {
-    const business = (searchParams.get('business') as Business) || 'Holywater';
-    const pageName = searchParams.get('page') || '';
-    const niche = searchParams.get('niche') || '';
-    const fmt = (searchParams.get('format') as DisplayFormat) || 'ALL';
-    const start = searchParams.get('startDate') || '';
-    const end = searchParams.get('endDate') || '';
+    if (initRef.current) return;
+    initRef.current = true;
 
-    setSelectedBusiness(business);
-    setSelectedPage(pageName);
-    setSelectedNiche(niche);
-    setDisplayFormat(fmt === 'IMAGE' || fmt === 'VIDEO' ? fmt : 'ALL');
-    setStartDate(start);
-    setEndDate(end);
+    const initBusinessAndFilters = async () => {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        console.error('No user found');
+        return;
+      }
+      
+      const { data: businessList, error } = await supabase
+        .from('businesses')
+        .select('id, slug, name')
+        .eq('owner_id', user.id);
+      
+      if (error || !businessList || businessList.length === 0) {
+        console.error('Error fetching businesses:', error);
+        console.log('User:', user);
+        return;
+      }
+      
+      console.log('Businesses found:', businessList.length, 'List:', businessList);
+      setBusinesses(businessList);
+      
+      // Try to restore selected business from URL, or use first one
+      const urlBusiness = searchParams.get('businessId');
+      const defaultBusiness = urlBusiness && businessList.find(b => b.id === urlBusiness)
+        ? urlBusiness
+        : businessList[0].id;
+      setBusinessId(defaultBusiness);
+      
+      // Init filters from URL
+      const pageName = searchParams.get('page') || '';
+      const niche = searchParams.get('niche') || '';
+      const fmt = (searchParams.get('format') as DisplayFormat) || 'ALL';
+      const start = searchParams.get('startDate') || '';
+      const end = searchParams.get('endDate') || '';
 
-    // duplicates param is optional; we can only safely apply it AFTER stats are loaded.
-    // So here we just mark initialized and handle duplicates param later when stats arrive.
-    setIsInitialized(true);
+      setSelectedPage(pageName);
+      setSelectedNiche(niche);
+      setDisplayFormat(fmt === 'IMAGE' || fmt === 'VIDEO' ? fmt : 'ALL');
+      setStartDate(start);
+      setEndDate(end);
+
+      // duplicates param is optional; we can only safely apply it AFTER stats are loaded.
+      // So here we just mark initialized and handle duplicates param later when stats arrive.
+      setIsInitialized(true);
+    };
+    
+    initBusinessAndFilters();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // ===== Load page names when business changes =====
-  useEffect(() => {
-    loadPageNames();
-  }, [loadPageNames]);
+  // ===== Handle business change =====
+  const handleBusinessChange = useCallback((newBusinessId: string) => {
+    setBusinessId(newBusinessId);
+    // Preserve other URL params but update businessId
+    const params = new URLSearchParams();
+    params.set('businessId', newBusinessId);
+    if (selectedPage) params.set('page', selectedPage);
+    if (selectedNiche) params.set('niche', selectedNiche);
+    if (displayFormat !== 'ALL') params.set('format', displayFormat);
+    if (startDate) params.set('startDate', startDate);
+    if (endDate) params.set('endDate', endDate);
+    window.history.replaceState({}, '', `?${params.toString()}`);
+  }, [selectedPage, selectedNiche, displayFormat, startDate, endDate]);
 
-  // ===== Reset niche & duplicates UX when switching business (for Headway niche rules) =====
+  // ===== Load page names when businessId is available =====
   useEffect(() => {
-    // Reset only niche and duplicates; keep page/format unless user changed via UI
-    setSelectedNiche('');
-    setDupsEverApplied(false);
-    setDupsDirty(false);
-  }, [selectedBusiness]);
+    if (businessId) {
+      loadPageNames();
+    }
+  }, [businessId, loadPageNames]);
 
   // ===== Load duplicates stats when business/page/niche change =====
   useEffect(() => {
@@ -380,7 +424,6 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
 
       // Update URL
       updateUrlParams({
-        business: selectedBusiness,
         page: selectedPage,
         niche: selectedNiche,
         format: displayFormat,
@@ -395,7 +438,7 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
     };
   }, [
     isInitialized,
-    selectedBusiness,
+    businessId,
     selectedPage,
     selectedNiche,
     startDate,
@@ -417,7 +460,6 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
   useEffect(() => {
     if (!isInitialized) return;
     updateUrlParams({
-      business: selectedBusiness,
       page: selectedPage,
       niche: selectedNiche,
       format: displayFormat,
@@ -432,8 +474,31 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
     <div className="min-h-screen bg-slate-50">
       <div className="container mx-auto px-6 py-12">
         <div className="mb-8">
-          <h1 className="text-4xl font-bold text-slate-900 mb-2">Ad Gallery</h1>
+          <div className="flex items-center justify-between mb-2">
+            <h1 className="text-4xl font-bold text-slate-900">Ad Gallery</h1>
+            <UserMenu />
+          </div>
           <p className="text-slate-600">Browse creative advertisements</p>
+
+          {/* Business selector */}
+          {businesses.length > 0 && (
+            <div className="mt-4 mb-4">
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Select Business:
+              </label>
+              <select
+                value={businessId || ''}
+                onChange={(e) => handleBusinessChange(e.target.value)}
+                className="block w-full px-4 py-2 border border-slate-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent text-slate-900 bg-white"
+              >
+                {businesses.map((biz) => (
+                  <option key={biz.id} value={biz.id}>
+                    {biz.name || biz.slug} ({biz.id.slice(0, 8)}...)
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Active filters summary */}
           <div className="mt-4 flex flex-wrap gap-2 items-center">
@@ -485,40 +550,6 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
         {/* ===== Filters ===== */}
         <div className="mb-6 flex flex-wrap gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">Genesis Business</label>
-            <select
-              value={selectedBusiness}
-              onChange={(e) => {
-                const next = e.target.value as Business;
-                // Switch business and reset all filters via user action
-                setSelectedBusiness(next);
-                setSelectedPage('');
-                setSelectedNiche('');
-                setDisplayFormat('ALL');
-                setStartDate('');
-                setEndDate('');
-                setDupsEverApplied(false);
-                setDupsDirty(false);
-
-                // Immediately reflect new base params in URL
-                updateUrlParams({
-                  business: next,
-                  page: '',
-                  niche: '',
-                  format: 'ALL',
-                  startDate: '',
-                  endDate: '',
-                  duplicatesApplied: null,
-                });
-              }}
-              className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
-            >
-              <option value="Holywater">Holywater</option>
-              <option value="Headway">Headway</option>
-            </select>
-          </div>
-
-          <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">Page Name</label>
             <select
               value={selectedPage}
@@ -540,18 +571,11 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
               value={selectedNiche}
               onChange={(e) => setSelectedNiche(e.target.value)}
               className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
-              disabled={selectedBusiness === 'Headway'}
             >
-              {selectedBusiness === 'Headway' ? (
-                <option value="">All available</option>
-              ) : (
-                <>
-                  <option value="">All</option>
-                  <option value="drama">Drama</option>
-                  {/* store DB-native value to avoid extra mapping issues */}
-                  <option value="passion">Romantic novels</option>
-                </>
-              )}
+              <option value="">All</option>
+              <option value="drama">Drama</option>
+              {/* store DB-native value to avoid extra mapping issues */}
+              <option value="passion">Romantic novels</option>
             </select>
           </div>
 
@@ -669,7 +693,6 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
 
                     // Persist immediately so back navigation keeps the range
                     updateUrlParams({
-                      business: selectedBusiness,
                       page: selectedPage,
                       niche: selectedNiche,
                       format: displayFormat,
@@ -717,7 +740,7 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
           {filteredAds.map((ad) => (
             <Link
               key={ad.id}
-              href={`/view/${ad.ad_archive_id}?business=${selectedBusiness}&page=${selectedPage}${
+              href={`/view/${ad.ad_archive_id}?businessId=${businessId}&page=${selectedPage}${
                 dupsEverApplied
                   ? `&duplicates=${duplicatesRangeApplied[0]}-${duplicatesRangeApplied[1]}`
                   : ''

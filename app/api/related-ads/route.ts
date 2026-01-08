@@ -2,12 +2,9 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { getImageUrl } from '@/utils/supabase/db';
+import { getImageUrl, getBusinessSlug } from '@/utils/supabase/db';
 
-const HEADWAY_TABLE = 'duplicate_2data_base_blinkist';
-const HOLYWATER_TABLE = 'data_base';
-const HEADWAY_BUCKET = 'blinkist2';
-const HOLYWATER_BUCKET = 'test2';
+const ADS_TABLE = 'ads';
 
 export async function GET(request: Request) {
   try {
@@ -16,20 +13,29 @@ export async function GET(request: Request) {
     const lastId = searchParams.get('last_id');
     const limitParam = searchParams.get('limit');
     const currentId = searchParams.get('current_id');
-    const tableParam = searchParams.get('table');
+    const businessId = searchParams.get('business_id');
 
     if (!vgParam) {
       return NextResponse.json({ error: 'vector_group is required' }, { status: 400 });
     }
+    if (!businessId) {
+      return NextResponse.json({ error: 'business_id is required' }, { status: 400 });
+    }
+
     const vector_group = Number(vgParam);
     const limit = Math.min(Math.max(Number(limitParam || '60'), 1), 500);
-    const table = tableParam === HEADWAY_TABLE ? HEADWAY_TABLE : (tableParam === HOLYWATER_TABLE ? HOLYWATER_TABLE : HOLYWATER_TABLE);
-    const bucket = table === HEADWAY_TABLE ? HEADWAY_BUCKET : HOLYWATER_BUCKET;
+
+    // Get business slug for image URLs
+    const businessSlug = await getBusinessSlug(businessId);
+    if (!businessSlug) {
+      return NextResponse.json({ error: 'Business not found' }, { status: 404 });
+    }
 
     let q = supabase
-      .from(table)
+      .from(ADS_TABLE)
       .select('ad_archive_id, title, page_name, text, caption, display_format, vector_group, url')
       .eq('vector_group', vector_group)
+      .eq('business_id', businessId)
       .order('ad_archive_id', { ascending: true })
       .limit(limit);
 
@@ -57,7 +63,7 @@ export async function GET(request: Request) {
       created_at: new Date().toISOString(),
       vector_group: ad.vector_group,
       meta_ad_url: `https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}`,
-      image_url: getImageUrl(ad.ad_archive_id, bucket),
+      image_url: getImageUrl(ad.ad_archive_id, businessSlug),
     }));
 
     const nextCursor = items.length > 0 ? items[items.length - 1].ad_archive_id : null;

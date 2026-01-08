@@ -44,7 +44,29 @@ export default function AuthPage() {
         if (error) {
           setError(error.message)
         } else {
-          router.push('/')
+          // Check if businesses table exists and user has setup
+          try {
+            const { data: business } = await supabase
+              .from('businesses')
+              .select('id, name')
+              .single()
+            
+            const { data: competitors } = await supabase
+              .from('competitors')
+              .select('id')
+              .limit(1)
+            
+            // If no competitors configured, go to setup
+            if (!competitors || competitors.length === 0) {
+              router.push('/setup')
+            } else {
+              router.push('/')
+            }
+          } catch (tableError) {
+            // If tables don't exist yet, just go to gallery
+            console.log('Setup tables not found, redirecting to gallery:', tableError)
+            router.push('/')
+          }
         }
       }
     } catch (err) {
