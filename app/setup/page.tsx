@@ -1,383 +1,233 @@
-'use client'
+"use client";
 
-import { useState, useEffect } from 'react'
+import { useCallback, useMemo, useState, useEffect } from "react";
 import { createClient } from '@/utils/supabase/client'
 import { useRouter } from 'next/navigation'
 
-interface Competitor {
-  id: string
-  fb_page_url: string
-  page_name: string
-  niche_group: string
-  is_active: boolean
-}
+type LinkRow = { id: string; url: string };
+const uid = () => Math.random().toString(36).slice(2, 10);
 
 export default function SetupPage() {
-  const [user, setUser] = useState<any>(null)
-  const [businessName, setBusinessName] = useState('')
-  const [competitors, setCompetitors] = useState<Competitor[]>([])
-  const [newCompetitor, setNewCompetitor] = useState({ url: '', niche: '' })
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [tablesExist, setTablesExist] = useState(true)
-  const supabase = createClient()
-  const router = useRouter()
+  const router = useRouter();
+  const supabase = createClient();
+  const [userId, setUserId] = useState<string | null>(null);
+  const [rows, setRows] = useState<LinkRow[]>([{ id: uid(), url: '' }]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    checkUser()
-  }, [])
+    supabase.auth.getUser().then(({ data }) => {
+      setUserId(data.user?.id ?? null);
+    });
+  }, [supabase]);
 
-  async function checkUser() {
-    const { data: { user } } = await supabase.auth.getUser()
-    
-    if (!user) {
-      router.push('/auth')
-      return
-    }
+  const nonEmptyUrls = useMemo(
+    () => Array.from(new Set(rows.map(r => r.url.trim()).filter(Boolean))),
+    [rows]
+  );
 
-    setUser(user)
-    await loadClientData(user.id)
-    setLoading(false)
-  }
-
-  async function loadClientData(userId: string) {
+  const isLikelyMetaAds = useCallback((u: string) => {
     try {
-      // Load business info
-      const { data: business, error } = await supabase
-        .from('businesses')
-        .select('*')
-        .eq('owner_id', userId)
-        .single()
-
-      if (error) {
-        // If table doesn't exist, show warning
-        if (error.message?.includes('relation') || error.code === '42P01') {
-          setTablesExist(false)
-          return
-        }
-        throw error
-      }
-
-      if (business) {
-        setBusinessName(business.name || '')
-        
-        // Load competitors
-        const { data: comps } = await supabase
-          .from('competitors')
-          .select('*')
-          .eq('business_id', business.id)
-          .order('created_at', { ascending: false })
-        
-        if (comps) setCompetitors(comps)
-      }
-    } catch (err) {
-      console.error('Error loading business data:', err)
-      setTablesExist(false)
+      const { hostname } = new URL(u);
+      const host = hostname.toLowerCase();
+      return host.includes('facebook') || host.includes('meta') || host.includes('ads');
+    } catch {
+      return false;
     }
-  }
+  }, []);
 
-  async function handleSaveClient() {
-    if (!user) return
-    setSaving(true)
+  const invalidUrls = useMemo(
+    () => nonEmptyUrls.filter(u => !isLikelyMetaAds(u)),
+    [nonEmptyUrls, isLikelyMetaAds]
+  );
 
+  const addRow = () => setRows(rs => [...rs, { id: uid(), url: '' }]);
+  const removeRow = (id: string) => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== id) : rs));
+  const updateRow = (id: string, url: string) => setRows(rs => rs.map(x => (x.id === id ? { ...x, url } : x)));
+
+  const handlePasteBulk = async () => {
     try {
-      // Upsert business
-      const { data: business, error } = await supabase
-        .from('businesses')
-        .upsert({
-          owner_id: user.id,
-          name: businessName,
-          slug: businessName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-        }, { onConflict: 'owner_id' })
-        .select()
-        .single()
+      const text = await navigator.clipboard.readText();
+      if (!text) return;
+      const candidates = text.split(/\r?\n|\s+/).map(t => t.trim()).filter(Boolean);
+      if (!candidates.length) return;
+      const merged = Array.from(new Set([...nonEmptyUrls, ...candidates]));
+      setRows(merged.map(u => ({ id: uid(), url: u })));
+      setSuccessMsg('Links pasted from clipboard');
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch {
+      setError('Failed to read clipboard');
+      setTimeout(() => setError(null), 3000);
+    }
+  };
 
-      if (error) throw error
-      alert('✅ Business info saved!')
-    } catch (err: any) {
-      alert('❌ Error: ' + err.message)
+  const downloadJson = (data: unknown, filename: string) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const onSend = async () => {
+    setError(null); setSuccessMsg(null);
+    if (!nonEmptyUrls.length) { setError('Add at least one link'); return; }
+    setSending(true);
+    try {
+      const res = await fetch('/api/forward-webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ links: nonEmptyUrls })
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok) {
+        const msg = ct.includes('application/json') ? (await res.json()).message : await res.text();
+        throw new Error(msg || 'Webhook error');
+      }
+      const data = ct.includes('application/json') ? await res.json() : await res.text();
+      const filename = `facebook_meta_ads_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      downloadJson(data, filename);
+      setSuccessMsg('JSON downloaded successfully');
+    } catch (e: any) {
+      setError(e?.message || 'Unknown error');
     } finally {
-      setSaving(false)
+      setSending(false);
     }
-  }
-
-  async function handleAddCompetitor() {
-    if (!user || !newCompetitor.url.trim()) return
-    setSaving(true)
-
-    try {
-      // Get business_id
-      const { data: business } = await supabase
-        .from('businesses')
-        .select('id')
-        .eq('owner_id', user.id)
-        .single()
-
-      if (!business) {
-        alert('Please save business info first')
-        return
-      }
-
-      const { data, error } = await supabase
-        .from('competitors')
-        .insert({
-          business_id: business.id,
-          fb_page_url: newCompetitor.url.trim(),
-          niche_group: newCompetitor.niche.trim() || 'Default',
-          is_active: true
-        })
-        .select()
-        .single()
-
-      if (error) throw error
-
-      setCompetitors([data, ...competitors])
-      setNewCompetitor({ url: '', niche: '' })
-      alert('✅ Competitor added!')
-    } catch (err: any) {
-      alert('❌ Error: ' + err.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleDeleteCompetitor(id: string) {
-    if (!confirm('Delete this competitor?')) return
-    
-    const { error } = await supabase
-      .from('competitors')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      alert('Error: ' + error.message)
-    } else {
-      setCompetitors(competitors.filter(c => c.id !== id))
-    }
-  }
-
-  async function handleToggleActive(id: string, currentState: boolean) {
-    const { error } = await supabase
-      .from('competitors')
-      .update({ is_active: !currentState })
-      .eq('id', id)
-
-    if (error) {
-      alert('Error: ' + error.message)
-    } else {
-      setCompetitors(competitors.map(c => 
-        c.id === id ? { ...c, is_active: !currentState } : c
-      ))
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-slate-600">Loading...</p>
-        </div>
-      </div>
-    )
-  }
+  };
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="container mx-auto px-6 py-12 max-w-4xl">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">Setup</h1>
-            <p className="text-slate-600 mt-1">Configure your business and competitors</p>
-          </div>
-          <button
-            onClick={() => router.push('/')}
-            className="px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition"
+    <div className="min-h-screen bg-white">
+      {/* Simple Header */}
+      <header className="border-b border-slate-200 px-6 py-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <button 
+            onClick={() => router.push('/')} 
+            className="text-sm text-slate-600 hover:text-slate-900 transition-colors"
           >
             ← Back to Gallery
           </button>
+          <h1 className="text-lg font-medium text-slate-900">Setup</h1>
+          <div className="text-sm text-slate-500">{nonEmptyUrls.length} links</div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-5xl mx-auto px-6 py-8">
+        
+        {/* Title Section */}
+        <div className="mb-6">
+          <h2 className="text-2xl font-medium text-slate-900 mb-2">Send Links to Webhook</h2>
+          <p className="text-slate-600">Paste Facebook/Meta Ads Library links and send them to your webhook.</p>
         </div>
 
-        {/* Warning if tables don't exist */}
-        {!tablesExist && (
-          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-6 mb-6 rounded-lg">
-            <div className="flex items-start gap-3">
-              <svg className="w-6 h-6 text-yellow-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <div>
-                <h3 className="text-lg font-semibold text-yellow-900 mb-2">Database Setup Required</h3>
-                <p className="text-yellow-800 mb-3">
-                  The client management tables have not been created yet. Please run the SQL migration first:
-                </p>
-                <ol className="list-decimal list-inside text-yellow-800 space-y-1 mb-4">
-                  <li>Open Supabase Dashboard → SQL Editor</li>
-                  <li>Run the file: <code className="bg-yellow-100 px-2 py-0.5 rounded">supabase/setup_client_system.sql</code></li>
-                  <li>Refresh this page</li>
-                </ol>
-                <a 
-                  href="/DEPLOYMENT.md" 
-                  target="_blank"
-                  className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-700 font-medium"
-                >
-                  📄 View Deployment Guide
-                </a>
-              </div>
-            </div>
+        {/* Alerts */}
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm flex items-center justify-between">
+            <span>{error}</span>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">×</button>
+          </div>
+        )}
+        {successMsg && (
+          <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded text-green-700 text-sm flex items-center justify-between">
+            <span>{successMsg}</span>
+            <button onClick={() => setSuccessMsg(null)} className="text-green-400 hover:text-green-600">×</button>
+          </div>
+        )}
+        {invalidUrls.length > 0 && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded text-amber-700 text-sm">
+            ⚠️ Warning: {invalidUrls.length} links don't appear to be from Facebook/Meta Ads
           </div>
         )}
 
-        {/* Business Info Section */}
-        <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-          <h2 className="text-xl font-semibold text-slate-900 mb-4">Business Information</h2>
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                Email
-              </label>
-              <input
-                type="email"
-                value={user?.email || ''}
-                disabled
-                className="w-full px-4 py-2 border border-slate-300 rounded-lg bg-slate-50 text-slate-600"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                Business Name
-              </label>
-              <input
-                type="text"
-                value={businessName}
-                onChange={(e) => setBusinessName(e.target.value)}
-                placeholder="My Company"
-                disabled={!tablesExist}
-                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none disabled:bg-slate-50 disabled:text-slate-400"
-              />
-            </div>
-            <button
-              onClick={handleSaveClient}
-              disabled={saving || !tablesExist}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {saving ? 'Saving...' : 'Save Business Info'}
-            </button>
-          </div>
+        {/* Action Buttons */}
+        <div className="flex gap-3 mb-6">
+          <button
+            onClick={addRow}
+            disabled={sending}
+            className="px-4 py-2 bg-slate-900 text-white rounded hover:bg-slate-800 disabled:opacity-50 transition-colors text-sm font-medium"
+          >
+            + Add Row
+          </button>
+          <button
+            onClick={handlePasteBulk}
+            disabled={sending}
+            className="px-4 py-2 border border-slate-300 text-slate-700 rounded hover:bg-slate-50 disabled:opacity-50 transition-colors text-sm font-medium"
+          >
+            Paste from Clipboard
+          </button>
         </div>
 
-        {/* Competitors Section */}
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-xl font-semibold text-slate-900 mb-4">Competitors</h2>
-          
-          {/* Add New Competitor */}
-          <div className="mb-6 p-4 bg-slate-50 rounded-lg">
-            <h3 className="text-sm font-medium text-slate-700 mb-3">Add New Competitor</h3>
-            <div className="flex gap-3">
-              <input
-                type="text"
-                value={newCompetitor.url}
-                onChange={(e) => setNewCompetitor({ ...newCompetitor, url: e.target.value })}
-                placeholder="Facebook Page URL or Ads Library link"
-                className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-              />
-              <input
-                type="text"
-                value={newCompetitor.niche}
-                onChange={(e) => setNewCompetitor({ ...newCompetitor, niche: e.target.value })}
-                placeholder="Niche (optional)"
-                className="w-40 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-              />
-              <button
-                onClick={handleAddCompetitor}
-                disabled={saving || !newCompetitor.url.trim()}
-                className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50 whitespace-nowrap"
-              >
-                + Add
-              </button>
-            </div>
-          </div>
-
-          {/* Competitors List */}
-          <div className="space-y-3">
-            {competitors.length === 0 ? (
-              <div className="text-center py-8 text-slate-500">
-                No competitors added yet. Add your first competitor above.
-              </div>
-            ) : (
-              competitors.map((comp) => (
-                <div
-                  key={comp.id}
-                  className={`flex items-center gap-4 p-4 border rounded-lg transition ${
-                    comp.is_active ? 'border-slate-200 bg-white' : 'border-slate-200 bg-slate-50 opacity-60'
-                  }`}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <a
-                        href={comp.fb_page_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline font-medium truncate"
-                      >
-                        {comp.page_name || comp.fb_page_url}
-                      </a>
-                      {comp.niche_group && (
-                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-700">
-                          {comp.niche_group}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-500 truncate">{comp.fb_page_url}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
+        {/* Links Table */}
+        <div className="border border-slate-200 rounded-lg overflow-hidden mb-6">
+          <table className="w-full">
+            <thead className="bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th className="text-left px-4 py-3 text-xs font-medium text-slate-600 uppercase tracking-wide w-12">#</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-slate-600 uppercase tracking-wide">Link</th>
+                <th className="text-center px-4 py-3 text-xs font-medium text-slate-600 uppercase tracking-wide w-24">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {rows.map((row, idx) => (
+                <tr key={row.id} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-4 py-3 text-sm text-slate-500">{idx + 1}</td>
+                  <td className="px-4 py-3">
+                    <input
+                      type="url"
+                      value={row.url}
+                      onChange={(e) => updateRow(row.id, e.target.value)}
+                      placeholder="https://www.facebook.com/ads/library/?id=..."
+                      className={`w-full px-3 py-2 border rounded text-sm transition-colors ${
+                        row.url && !isLikelyMetaAds(row.url)
+                          ? 'border-red-300 focus:border-red-400 focus:ring-1 focus:ring-red-400'
+                          : 'border-slate-300 focus:border-slate-400 focus:ring-1 focus:ring-slate-400'
+                      } outline-none`}
+                    />
+                    {row.url && !isLikelyMetaAds(row.url) && (
+                      <p className="text-xs text-red-600 mt-1">Not a Facebook/Meta Ads link</p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-center">
                     <button
-                      onClick={() => handleToggleActive(comp.id, comp.is_active)}
-                      className={`px-3 py-1 rounded text-xs font-medium transition ${
-                        comp.is_active
-                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                          : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
-                      }`}
-                    >
-                      {comp.is_active ? 'Active' : 'Inactive'}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteCompetitor(comp.id)}
-                      className="px-3 py-1 rounded text-xs font-medium bg-red-100 text-red-700 hover:bg-red-200 transition"
+                      onClick={() => removeRow(row.id)}
+                      disabled={rows.length === 1 || sending}
+                      className="text-sm text-red-600 hover:text-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
                       Delete
                     </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          {/* Summary */}
-          {competitors.length > 0 && (
-            <div className="mt-6 pt-6 border-t border-slate-200">
-              <div className="flex gap-6 text-sm">
-                <div>
-                  <span className="text-slate-600">Total:</span>
-                  <span className="ml-2 font-semibold text-slate-900">{competitors.length}</span>
-                </div>
-                <div>
-                  <span className="text-slate-600">Active:</span>
-                  <span className="ml-2 font-semibold text-green-600">
-                    {competitors.filter(c => c.is_active).length}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-600">Niches:</span>
-                  <span className="ml-2 font-semibold text-purple-600">
-                    {new Set(competitors.map(c => c.niche_group)).size}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      </div>
+
+        {/* Send Button */}
+        <div className="flex items-center justify-between">
+          <button
+            onClick={onSend}
+            disabled={sending || nonEmptyUrls.length === 0}
+            className="px-6 py-2.5 bg-slate-900 text-white rounded hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+          >
+            {sending ? 'Sending...' : 'Send to Webhook'}
+          </button>
+          <p className="text-xs text-slate-500">
+            Webhook configured via <code className="bg-slate-100 px-1.5 py-0.5 rounded">WEBHOOK_URL</code>
+          </p>
+        </div>
+
+        {/* Info Note */}
+        <div className="mt-8 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+          <h3 className="text-sm font-medium text-slate-900 mb-2">How it works</h3>
+          <ul className="text-sm text-slate-600 space-y-1">
+            <li>1. Add or paste links from Facebook Ads Library</li>
+            <li>2. Your client_id is automatically included with the request</li>
+            <li>3. Webhook processes data and returns a JSON file</li>
+            <li>4. File downloads automatically to your browser</li>
+          </ul>
+        </div>
+      </main>
     </div>
-  )
+  );
 }

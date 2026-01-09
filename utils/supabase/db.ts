@@ -19,6 +19,7 @@ const CREATIVE_URL_CACHE_MS = 10 * 60 * 1000; // 10 minutes
 // Cache for group date ranges (min/max dates per vector_group)
 const groupDateRangeCache = new Map<string, { data: { minStartDate: string | null; maxEndDate: string | null }; time: number }>();
 const GROUP_DATE_CACHE_MS = 10 * 60 * 1000; // 10 minutes
+const GROUP_DATE_RPC_TIMEOUT_MS = 2000; // fail fast to avoid UI hangs
 
 function nowMs() {
   return Date.now();
@@ -242,22 +243,29 @@ async function getGroupDateRange(vectorGroup: number): Promise<{ minStartDate: s
   console.log(`🔍 Fetching group dates for vector_group=${vectorGroup}`);
   
   try {
-    // Use Supabase RPC function for optimized query
-    const { data, error } = await supabase.rpc('get_group_date_range', { 
+    // Use Supabase RPC function for optimized query with a timeout guard
+    const rpcPromise = supabase.rpc('get_group_date_range', { 
       target_table: ADS_TABLE,
       group_id: vectorGroup
     });
 
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('rpc_timeout')), GROUP_DATE_RPC_TIMEOUT_MS);
+    });
+
+    const { data, error } = await Promise.race([rpcPromise, timeoutPromise]);
+
     console.log(`📥 RPC result for group ${vectorGroup}:`, { data, error });
 
-    if (error || !data || !data[0]) {
+    if (error || !data || !(data as any)[0]) {
       console.warn(`Failed to fetch group dates for ${vectorGroup}:`, error);
       return { minStartDate: null, maxEndDate: null };
     }
 
+    const first = (data as any)[0];
     const result = {
-      minStartDate: data[0].min_start || null,
-      maxEndDate: data[0].max_end || null,
+      minStartDate: first.min_start || null,
+      maxEndDate: first.max_end || null,
     };
 
     console.log(`✅ Group ${vectorGroup} dates: ${result.minStartDate} to ${result.maxEndDate}`);
@@ -277,53 +285,50 @@ export async function fetchDuplicatesStats(
   opts?: { startDate?: string; endDate?: string; displayFormat?: 'IMAGE' | 'VIDEO' | 'ALL' }
 ): Promise<{ min: number; max: number }> {
   try {
-    console.log('fetchDuplicatesStats (ads_groups):', { businessId, pageName, competitorNiche });
+    console.log('fetchDuplicatesStats called with:', { businessId, pageName, competitorNiche, opts });
 
-    // Fetch groups for business
-    const { data: groups, error: gErr } = await supabase
-      .from(ADS_GROUPS_TABLE)
-      .select('vector_group, items, rep_ad_archive_id')
-      .eq('business_id', businessId)
-      .order('items', { ascending: true })
-      .limit(100000);
+    // Build query directly from ads table using duplicates_count field
+    let query = supabase
+      .from(ADS_TABLE)
+      .select('duplicates_count')
+      .eq('business_id', businessId);
 
-    if (gErr || !groups) {
-      console.error('fetchDuplicatesStats groups error:', gErr);
-      return { min: 0, max: 100 };
+    if (pageName) query = query.eq('page_name', pageName);
+    if (competitorNiche) query = query.eq('competitor_niche', normalizeNiche(competitorNiche));
+    if (opts?.displayFormat && opts.displayFormat !== 'ALL') query = query.eq('display_format', opts.displayFormat);
+    if (opts?.startDate) query = query.gte('start_date_formatted', opts.startDate);
+    if (opts?.endDate) query = query.lte('end_date_formatted', opts.endDate);
+
+    const { data: ads, error: adsErr } = await query;
+
+    if (adsErr || !ads || ads.length === 0) {
+      console.error('fetchDuplicatesStats error:', adsErr);
+      return { min: 1, max: 100 };
     }
 
-    let filtered = groups as any[];
+    const counts = ads
+      .map((ad: any) => Number(ad.duplicates_count || 0))
+      .filter((n) => !Number.isNaN(n) && n >= 0);
 
-    // If filters present, constrain by representative ad fields
-    if (pageName || competitorNiche || opts?.displayFormat || opts?.startDate || opts?.endDate) {
-      const repIds = filtered.map((g: any) => g.rep_ad_archive_id).filter(Boolean);
-      if (repIds.length) {
-        let rq = supabase
-          .from(ADS_TABLE)
-          .select('ad_archive_id, page_name, competitor_niche, display_format, start_date_formatted, end_date_formatted')
-          .in('ad_archive_id', repIds);
+    // Show distribution
+    const countsList = counts.slice(0, 30);
+    const maxCount = Math.max(...counts);
+    const minCount = Math.min(...counts.filter((n) => n > 0));
+    console.log('First 30 duplicates_count values:', countsList);
+    console.log('Min count:', minCount, 'Max count:', maxCount);
+    console.log('Total ads:', ads.length, 'With duplicates > 0:', counts.filter((n) => n > 0).length);
 
-        if (pageName) rq = rq.eq('page_name', pageName);
-        if (competitorNiche) rq = rq.eq('competitor_niche', normalizeNiche(competitorNiche));
-        if (opts?.displayFormat && opts.displayFormat !== 'ALL') rq = rq.eq('display_format', opts.displayFormat);
-        if (opts?.startDate) rq = rq.gte('start_date_formatted', opts.startDate);
-        if (opts?.endDate) rq = rq.lte('end_date_formatted', opts.endDate);
+    if (counts.length === 0) return { min: 1, max: 100 };
 
-        const { data: reps, error: rErr } = await rq;
-        if (!rErr && reps) {
-          const allowed = new Set(reps.map((r: any) => r.ad_archive_id));
-          filtered = filtered.filter((g: any) => allowed.has(g.rep_ad_archive_id));
-        }
-      }
-    }
+    const validCounts = counts.filter((n) => n > 0);
+    if (validCounts.length === 0) return { min: 1, max: 100 };
 
-    if (!filtered.length) return { min: 0, max: 100 };
-    const arr = filtered.map((g: any) => Number(g.items || 0)).filter((n) => !Number.isNaN(n));
-    if (!arr.length) return { min: 0, max: 100 };
-    return { min: Math.min(...arr), max: Math.max(...arr) };
+    const result = { min: Math.min(...validCounts), max: Math.max(...validCounts) };
+    console.log('fetchDuplicatesStats result:', result);
+    return result;
   } catch (err) {
     console.error('Error fetching duplicates stats:', err);
-    return { min: 0, max: 100 };
+    return { min: 1, max: 100 };
   }
 }
 
@@ -426,14 +431,13 @@ export async function fetchAds(
     // Pre-fetch group dates
     const groupDatesCache = new Map<number, { minStartDate: string | null; maxEndDate: string | null }>();
     const uniqueVectorGroups = [...new Set(pageGroups.map((r: any) => r.vector_group))];
-    await Promise.all(
-      uniqueVectorGroups.map(async (vg) => {
-        if (vg !== -1 && vg != null) {
-          const dates = await getGroupDateRange(vg);
-          groupDatesCache.set(vg, dates);
-        }
-      })
-    );
+
+    // Fetch sequentially to avoid hammering RPC and hitting statement timeouts
+    for (const vg of uniqueVectorGroups) {
+      if (vg === -1 || vg == null) continue;
+      const dates = await getGroupDateRange(vg);
+      groupDatesCache.set(vg, dates);
+    }
 
     // Resolve images
     const creativeUrls = await Promise.all(
@@ -632,13 +636,14 @@ export async function fetchPageNames(businessId: string): Promise<{ name: string
     return cached.data;
   }
 
+  // Fetch a capped set and aggregate client-side (Supabase JS lacks group helper here)
   const { data, error } = await supabase
     .from(ADS_TABLE)
     .select('page_name')
     .eq('business_id', businessId)
     .not('vector_group', 'is', null)
     .neq('vector_group', -1)
-    .limit(200000);
+    .limit(50000);
 
   if (error) {
     console.error('Error fetching page names:', JSON.stringify(error, null, 2));

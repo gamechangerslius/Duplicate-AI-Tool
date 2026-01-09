@@ -15,7 +15,7 @@ import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
 import { enUS } from '@mui/x-date-pickers/locales';
 import dayjs from 'dayjs';
 
-import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/utils/supabase/db';
+import { fetchAds, fetchPageNames } from '@/utils/supabase/db';
 import type { Ad } from '@/lib/types';
 import { AdCard } from '@/components/AdCard';
 import { ViewToggle } from '@/components/ViewToggle';
@@ -30,22 +30,10 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-function parseDuplicatesParam(
-  raw: string | null,
-  fallback: [number, number]
-): [number, number] {
-  if (!raw) return fallback;
-  const m = raw.match(/^(\d+)-(\d+)$/);
-  if (!m) return fallback;
-  const a = Number(m[1]);
-  const b = Number(m[2]);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return fallback;
-  return a <= b ? [a, b] : [b, a];
-}
-
 function normalizeNicheForDb(nicheUi: string): string {
   const s = (nicheUi || '').trim().toLowerCase();
   if (!s) return '';
+  // if you ever stored "romantic novels" in UI, map it to db value.
   if (s === 'romantic novels') return 'passion';
   return s;
 }
@@ -54,14 +42,20 @@ export default function HomeClient() {
   const searchParams = useSearchParams();
 
   return (
-    <LocalizationProvider dateAdapter={AdapterDayjs} localeText={enUS.components.MuiLocalizationProvider.defaultProps.localeText}>
+    <LocalizationProvider
+      dateAdapter={AdapterDayjs}
+      localeText={enUS.components.MuiLocalizationProvider.defaultProps.localeText}
+    >
       <HomeClientContent searchParams={searchParams} />
     </LocalizationProvider>
   );
 }
 
-function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof useSearchParams> }) {
-
+function HomeClientContent({
+  searchParams,
+}: {
+  searchParams: ReturnType<typeof useSearchParams>;
+}) {
   const [displayFormat, setDisplayFormat] = useState<DisplayFormat>('ALL');
 
   // ===== Data =====
@@ -70,17 +64,19 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
 
   // ===== Loading flags =====
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
 
   // ===== Pagination =====
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
-  // ===== Init guard (so effects don't fire twice with half-initialized state) =====
+  // ===== Init guard =====
   const [isInitialized, setIsInitialized] = useState(false);
+  const initRef = useRef(false);
+  const prevFiltersKeyRef = useRef<string | null>(null);
+
+  // ===== Debounce refs =====
   const filterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const duplicatesTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const initRef = useRef(false);
 
   // ===== Business ID and list =====
   const [businessId, setBusinessId] = useState<string | null>(null);
@@ -92,46 +88,53 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
 
-  // ===== Duplicates model =====
+  // ===== Duplicates slider model =====
   const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({
     min: 0,
     max: 0,
   });
+
+  // draft = while dragging, applied = used in DB query
   const [duplicatesRangeDraft, setDuplicatesRangeDraft] = useState<[number, number]>([0, 0]);
   const [duplicatesRangeApplied, setDuplicatesRangeApplied] = useState<[number, number]>([0, 0]);
+
+  // dirty = user changed slider but not yet applied (debounced)
   const [dupsDirty, setDupsDirty] = useState(false);
+
+  // IMPORTANT:
+  // We only add `duplicates=` to URL once user actually applied it.
   const [dupsEverApplied, setDupsEverApplied] = useState(false);
 
   /**
    * Update URL params (without pushing history).
-   * Note: we intentionally only include duplicates when the user has applied them.
+   * We intentionally only include duplicates when user has applied them.
    */
   const updateUrlParams = useCallback(
     (next: {
+      businessId?: string | null;
       page: string;
       niche: string;
       format?: DisplayFormat;
       startDate?: string;
       endDate?: string;
-      duplicatesApplied?: [number, number] | null; // null/undefined => remove param
+      duplicatesApplied?: [number, number] | null;
+      pageNumber?: number;
     }) => {
       const params = new URLSearchParams();
 
+      if (next.businessId) params.set('businessId', next.businessId);
       if (next.page) params.set('page', next.page);
-
-      // Only include niche if meaningful (non-empty string)
       if (next.niche && next.niche.trim()) params.set('niche', next.niche);
-
-      // Persist display format when not default
       if (next.format && next.format !== 'ALL') params.set('format', next.format);
-
-      // Date filters
       if (next.startDate) params.set('startDate', next.startDate);
       if (next.endDate) params.set('endDate', next.endDate);
 
-      // Only include duplicates if applied
       if (next.duplicatesApplied) {
         params.set('duplicates', `${next.duplicatesApplied[0]}-${next.duplicatesApplied[1]}`);
+      }
+
+      if (typeof next.pageNumber === 'number' && next.pageNumber > 1) {
+        params.set('p', String(next.pageNumber));
       }
 
       const newUrl = params.toString() ? `?${params.toString()}` : '/';
@@ -141,7 +144,16 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
   );
 
   /**
-   * Load page names for the selected business.
+   * Build duplicates filter for DB query.
+   * If user never applied duplicates filter, we query "all" duplicates.
+   */
+  const buildDuplicatesFilter = useCallback(() => {
+    if (!dupsEverApplied) return { min: 0, max: 999999 };
+    return { min: duplicatesRangeApplied[0], max: duplicatesRangeApplied[1] };
+  }, [dupsEverApplied, duplicatesRangeApplied]);
+
+  /**
+   * Load page names for selected business.
    */
   const loadPageNames = useCallback(async () => {
     if (!businessId) return;
@@ -150,162 +162,155 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
   }, [businessId]);
 
   /**
-   * Load duplicates stats (min/max) for current business/page/niche.
-   * If duplicates were never applied, we default the draft+applied range to full stats.
-   * If duplicates were applied, we clamp ranges into new bounds.
+   * Load ads for a specific page (replaces the list).
    */
-  const loadStats = useCallback(async () => {
-    if (!businessId) return;
-    const nicheForDb = selectedNiche ? normalizeNicheForDb(selectedNiche) : undefined;
+  const loadAds = useCallback(
+    async (pageToLoad: number) => {
+      if (!businessId) return;
 
-    const stats = await fetchDuplicatesStats(
-      businessId,
-      selectedPage,
-      nicheForDb,
-      {
-        startDate: startDate || undefined,
-        endDate: endDate || undefined,
-        displayFormat,
+      setLoading(true);
+
+      const nicheForDb = selectedNiche ? normalizeNicheForDb(selectedNiche) : undefined;
+
+      try {
+        const { ads: data, total } = await fetchAds(
+          {
+            businessId,
+            pageName: selectedPage || undefined,
+            duplicatesRange: buildDuplicatesFilter(),
+            competitorNiche: nicheForDb,
+            startDate: startDate || undefined,
+            endDate: endDate || undefined,
+          },
+          { page: pageToLoad, perPage: PER_PAGE }
+        );
+
+        setAds(data);
+        setTotalPages(Math.max(1, Math.ceil(total / PER_PAGE)));
+        setCurrentPage(pageToLoad);
+      } catch (err) {
+        console.error('loadAds error:', err);
+      } finally {
+        setLoading(false);
       }
+    },
+    [businessId, selectedPage, selectedNiche, startDate, endDate, buildDuplicatesFilter]
+  );
+
+  /**
+   * Compute duplicates stats from currently loaded ads.
+   * We avoid recomputing while a fetch is in progress to keep slider bounds stable.
+   */
+  const computeDuplicatesStatsFromAds = useCallback(() => {
+    if (!ads || ads.length === 0) return;
+
+    const counts = ads
+      .map((ad) => Number((ad as any).duplicates_count || 0))
+      .filter((n) => Number.isFinite(n) && n > 0);
+
+    if (counts.length === 0) {
+      // fallback bounds if backend returns no duplicates_count
+      setDuplicatesStats({ min: 1, max: 100 });
+      return;
+    }
+
+    const nextStats = { min: Math.min(...counts), max: Math.max(...counts) };
+
+    setDuplicatesStats((prev) =>
+      prev.min === nextStats.min && prev.max === nextStats.max ? prev : nextStats
     );
 
-    setDuplicatesStats(stats);
-
-    // If user never applied duplicates filter, keep UX simple: default to full range.
+    // If user never applied duplicates filter, keep it full-range by default.
     if (!dupsEverApplied) {
-      setDuplicatesRangeDraft([stats.min, stats.max]);
-      setDuplicatesRangeApplied([stats.min, stats.max]);
+      setDuplicatesRangeDraft((prev) =>
+        prev[0] === nextStats.min && prev[1] === nextStats.max ? prev : [nextStats.min, nextStats.max]
+      );
+      setDuplicatesRangeApplied((prev) =>
+        prev[0] === nextStats.min && prev[1] === nextStats.max ? prev : [nextStats.min, nextStats.max]
+      );
       setDupsDirty(false);
       return;
     }
 
-    // If user applied before, clamp current values into new bounds.
-    setDuplicatesRangeApplied(([a, b]) => [
-      clamp(a, stats.min, stats.max),
-      clamp(b, stats.min, stats.max),
-    ]);
-    setDuplicatesRangeDraft(([a, b]) => [
-      clamp(a, stats.min, stats.max),
-      clamp(b, stats.min, stats.max),
-    ]);
-  }, [businessId, selectedPage, selectedNiche, startDate, endDate, displayFormat, dupsEverApplied]);
-
-  const buildDuplicatesFilter = useCallback(() => {
-    if (!dupsEverApplied) return { min: 0, max: 999999 };
-    return { min: duplicatesRangeApplied[0], max: duplicatesRangeApplied[1] };
-  }, [dupsEverApplied, duplicatesRangeApplied]);
-
-  /**
-   * Load first page of ads for current filters.
-   */
-  const loadAds = useCallback(async () => {
-    if (!businessId) {
-      console.log('loadAds: businessId not ready');
-      return;
-    }
-    setLoading(true);
-
-    const nicheForDb = selectedNiche ? normalizeNicheForDb(selectedNiche) : undefined;
-    console.log('loadAds: calling fetchAds with filters', {
-      businessId,
-      pageName: selectedPage,
-      competitorNiche: nicheForDb,
-      startDate,
-      endDate,
+    // If user applied before, clamp applied & draft into new bounds.
+    setDuplicatesRangeApplied(([a, b]) => {
+      const next: [number, number] = [clamp(a, nextStats.min, nextStats.max), clamp(b, nextStats.min, nextStats.max)];
+      return next[0] === a && next[1] === b ? [a, b] : next;
     });
 
-    try {
-      const { ads: data, total } = await fetchAds(
-        {
-          businessId: businessId,
-          pageName: selectedPage || undefined,
-          duplicatesRange: buildDuplicatesFilter(),
-          competitorNiche: nicheForDb,
-          startDate: startDate || undefined,
-          endDate: endDate || undefined,
-        },
-        { page: 1, perPage: PER_PAGE }
-      );
+    setDuplicatesRangeDraft(([a, b]) => {
+      const next: [number, number] = [clamp(a, nextStats.min, nextStats.max), clamp(b, nextStats.min, nextStats.max)];
+      return next[0] === a && next[1] === b ? [a, b] : next;
+    });
+  }, [ads, dupsEverApplied]);
 
-      console.log('loadAds: received data', { count: data.length, total });
-      setAds(data);
-      setTotalPages(Math.ceil(total / PER_PAGE));
-      setCurrentPage(1);
-    } catch (err) {
-      console.error('loadAds error:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [businessId, selectedPage, selectedNiche, startDate, endDate, buildDuplicatesFilter]);
-
-  /**
-   * Load next page of ads.
-   */
-  const loadMoreAds = useCallback(async () => {
-    if (!businessId) return;
-    setLoadingMore(true);
-
-    const nicheForDb = selectedNiche ? normalizeNicheForDb(selectedNiche) : undefined;
-
-    const { ads: data, total } = await fetchAds(
-      {
-        businessId: businessId,
-        pageName: selectedPage || undefined,
-        duplicatesRange: buildDuplicatesFilter(),
-        competitorNiche: nicheForDb,
-        startDate: startDate || undefined,
-        endDate: endDate || undefined,
-      },
-      { page: currentPage + 1, perPage: PER_PAGE }
-    );
-
-    setAds((prev) => [...prev, ...data]);
-    setCurrentPage((prev) => prev + 1);
-    setTotalPages(Math.ceil(total / PER_PAGE));
-    setLoadingMore(false);
-  }, [businessId, selectedPage, selectedNiche, currentPage, startDate, endDate, buildDuplicatesFilter]);
-
-  // ===== Fetch businessId on mount and init filters from URL =====
+  // ===== 1) Init business + filters from URL (run once) =====
   useEffect(() => {
     if (initRef.current) return;
     initRef.current = true;
 
     const initBusinessAndFilters = async () => {
       const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
       if (!user) {
         console.error('No user found');
         return;
       }
-      
-      const { data: businessList, error } = await supabase
+
+      // businessId from URL (optional)
+      const rawBusinessParam = searchParams.get('businessId');
+      const currentBusinessId = rawBusinessParam ? rawBusinessParam.split(',')[0] : null;
+
+      // load owned + access businesses
+      const ownedPromise = supabase
         .from('businesses')
         .select('id, slug, name')
         .eq('owner_id', user.id);
-      
-      if (error || !businessList || businessList.length === 0) {
-        console.error('Error fetching businesses:', error);
-        console.log('User:', user);
+
+      const accessPromise = supabase
+        .from('business_access')
+        .select('businesses(id, slug, name)')
+        .eq('user_id', user.id);
+
+      const [{ data: owned, error: eOwned }, { data: access, error: eAccess }] = await Promise.all([
+        ownedPromise,
+        accessPromise,
+      ]);
+
+      if (eOwned || eAccess) {
+        console.error('Error fetching businesses:', eOwned || eAccess);
         return;
       }
-      
-      console.log('Businesses found:', businessList.length, 'List:', businessList);
-      setBusinesses(businessList);
-      
-      // Try to restore selected business from URL, or use first one
-      const urlBusiness = searchParams.get('businessId');
-      const defaultBusiness = urlBusiness && businessList.find(b => b.id === urlBusiness)
-        ? urlBusiness
-        : businessList[0].id;
+
+      const merged: { id: string; slug: string; name?: string }[] = [];
+      for (const row of owned || []) merged.push(row as any);
+      for (const row of access || []) {
+        const biz = (row as any).businesses;
+        if (biz) merged.push(biz);
+      }
+
+      const dedup = Array.from(new Map(merged.map((b) => [b.id, b])).values());
+      if (dedup.length === 0) {
+        console.error('No businesses available for user');
+        return;
+      }
+
+      setBusinesses(dedup);
+
+      // default business
+      const defaultBusiness = currentBusinessId || dedup[0].id;
       setBusinessId(defaultBusiness);
-      
-      // Init filters from URL
+
+      // init filters from URL
       const pageName = searchParams.get('page') || '';
       const niche = searchParams.get('niche') || '';
       const fmt = (searchParams.get('format') as DisplayFormat) || 'ALL';
       const start = searchParams.get('startDate') || '';
       const end = searchParams.get('endDate') || '';
+      const pageFromUrl = Number(searchParams.get('p') || '1');
 
       setSelectedPage(pageName);
       setSelectedNiche(niche);
@@ -313,123 +318,89 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
       setStartDate(start);
       setEndDate(end);
 
-      // duplicates param is optional; we can only safely apply it AFTER stats are loaded.
-      // So here we just mark initialized and handle duplicates param later when stats arrive.
+      if (Number.isFinite(pageFromUrl) && pageFromUrl > 1) {
+        setCurrentPage(Math.floor(pageFromUrl));
+      }
+
+      // duplicates param (optional)
+      // We can't apply it immediately because we need stats bounds first.
+      // So we store it in state once stats are computed (see effect below).
+      const dupRaw = searchParams.get('duplicates');
+      if (dupRaw) {
+        const m = dupRaw.match(/^(\d+)-(\d+)$/);
+        if (m) {
+          const a = Number(m[1]);
+          const b = Number(m[2]);
+          if (Number.isFinite(a) && Number.isFinite(b)) {
+            // set as "ever applied" early; actual clamping happens later
+            setDupsEverApplied(true);
+            setDuplicatesRangeApplied(a <= b ? [a, b] : [b, a]);
+            setDuplicatesRangeDraft(a <= b ? [a, b] : [b, a]);
+          }
+        }
+      }
+
       setIsInitialized(true);
     };
-    
+
     initBusinessAndFilters();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, []);
 
-  // ===== Handle business change =====
-  const handleBusinessChange = useCallback((newBusinessId: string) => {
-    setBusinessId(newBusinessId);
-    // Preserve other URL params but update businessId
-    const params = new URLSearchParams();
-    params.set('businessId', newBusinessId);
-    if (selectedPage) params.set('page', selectedPage);
-    if (selectedNiche) params.set('niche', selectedNiche);
-    if (displayFormat !== 'ALL') params.set('format', displayFormat);
-    if (startDate) params.set('startDate', startDate);
-    if (endDate) params.set('endDate', endDate);
-    window.history.replaceState({}, '', `?${params.toString()}`);
-  }, [selectedPage, selectedNiche, displayFormat, startDate, endDate]);
-
-  // ===== Load page names when businessId is available =====
+  // ===== 2) Load page names when businessId changes =====
   useEffect(() => {
-    if (businessId) {
-      loadPageNames();
-    }
+    if (!businessId) return;
+    loadPageNames();
   }, [businessId, loadPageNames]);
 
-  // ===== Load duplicates stats when business/page/niche change =====
-  useEffect(() => {
-    // Fetch slider bounds only after the current ads batch has finished loading
-    if (!isInitialized || loading) return;
-    loadStats();
-  }, [isInitialized, loading, loadStats]);
-
-  // Apply duplicates from URL immediately (raw) so back navigation keeps the selected range.
+  // ===== 3) Reset to page 1 when filters change =====
   useEffect(() => {
     if (!isInitialized) return;
-    const raw = searchParams.get('duplicates');
-    if (!raw) return;
 
-    const parsed = parseDuplicatesParam(raw, duplicatesRangeDraft);
-    setDuplicatesRangeDraft(parsed);
-    setDuplicatesRangeApplied(parsed);
-    setDupsEverApplied(true);
-    setDupsDirty(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isInitialized, searchParams]);
+    const key = [
+      businessId || '',
+      selectedPage,
+      selectedNiche,
+      startDate,
+      endDate,
+      dupsEverApplied ? `${duplicatesRangeApplied[0]}-${duplicatesRangeApplied[1]}` : '',
+    ].join('|');
 
-  /**
-   * Apply duplicates from URL AFTER stats are known.
-   * This ensures URL "duplicates=10-200" gets clamped properly into stats range.
-   */
+    if (prevFiltersKeyRef.current && prevFiltersKeyRef.current !== key) {
+      setCurrentPage(1);
+    }
+
+    prevFiltersKeyRef.current = key;
+  }, [
+    isInitialized,
+    businessId,
+    selectedPage,
+    selectedNiche,
+    startDate,
+    endDate,
+    dupsEverApplied,
+    duplicatesRangeApplied,
+  ]);
+
+  // ===== 4) MAIN effect: load data when filters or page change =====
   useEffect(() => {
     if (!isInitialized) return;
-    const raw = searchParams.get('duplicates');
-    if (!raw) return;
-
-    // We can only apply if stats look valid
-    if (duplicatesStats.max <= duplicatesStats.min) return;
-
-    const parsed = parseDuplicatesParam(raw, [duplicatesStats.min, duplicatesStats.max]);
-    const clamped: [number, number] = [
-      clamp(parsed[0], duplicatesStats.min, duplicatesStats.max),
-      clamp(parsed[1], duplicatesStats.min, duplicatesStats.max),
-    ];
-
-    // Set as applied (since URL explicitly has duplicates)
-    setDuplicatesRangeDraft(clamped);
-    setDuplicatesRangeApplied(clamped);
-    setDupsEverApplied(true);
-    setDupsDirty(false);
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isInitialized, duplicatesStats.min, duplicatesStats.max]);
-
-  /**
-   * Auto-apply duplicates slider changes after user stops dragging (debounced).
-   */
-  useEffect(() => {
-    if (!isInitialized || !dupsDirty) return;
-
-    if (duplicatesTimeoutRef.current) clearTimeout(duplicatesTimeoutRef.current);
-
-    duplicatesTimeoutRef.current = setTimeout(() => {
-      // Auto-apply draft to applied
-      setDuplicatesRangeApplied(duplicatesRangeDraft);
-      setDupsDirty(false);
-      setDupsEverApplied(true);
-    }, 400); // 400ms delay after user stops moving slider
-
-    return () => {
-      if (duplicatesTimeoutRef.current) clearTimeout(duplicatesTimeoutRef.current);
-    };
-  }, [duplicatesRangeDraft, dupsDirty, isInitialized]);
-
-  /**
-   * Auto-load ads when filters change (business/page/niche/dates) OR duplicates range changes.
-   */
-  useEffect(() => {
-    if (!isInitialized) return;
+    if (!businessId) return;
 
     if (filterTimeoutRef.current) clearTimeout(filterTimeoutRef.current);
 
     filterTimeoutRef.current = setTimeout(() => {
-      loadAds();
+      loadAds(currentPage);
 
-      // Update URL
       updateUrlParams({
+        businessId,
         page: selectedPage,
         niche: selectedNiche,
         format: displayFormat,
         startDate,
         endDate,
         duplicatesApplied: dupsEverApplied ? duplicatesRangeApplied : null,
+        pageNumber: currentPage,
       });
     }, 300);
 
@@ -439,36 +410,164 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
   }, [
     isInitialized,
     businessId,
+    currentPage,
     selectedPage,
     selectedNiche,
     startDate,
     endDate,
-    duplicatesRangeApplied,
+    displayFormat,
     dupsEverApplied,
+    duplicatesRangeApplied,
     loadAds,
     updateUrlParams,
-    displayFormat,
   ]);
+
+  // ===== 5) Recompute duplicates stats AFTER initial load =====
+  useEffect(() => {
+    if (!isInitialized) return;
+    if (loading) return;
+    if (ads.length === 0) return;
+
+    computeDuplicatesStatsFromAds();
+  }, [isInitialized, loading, ads.length, computeDuplicatesStatsFromAds]);
+
+  // ===== 6) Debounced auto-apply duplicates draft -> applied =====
+  useEffect(() => {
+    if (!isInitialized) return;
+    if (!dupsDirty) return;
+
+    if (duplicatesTimeoutRef.current) clearTimeout(duplicatesTimeoutRef.current);
+
+    duplicatesTimeoutRef.current = setTimeout(() => {
+      setDuplicatesRangeApplied(duplicatesRangeDraft);
+      setDupsDirty(false);
+      setDupsEverApplied(true);
+      // URL will be updated by main effect (because applied range changed)
+    }, 400);
+
+    return () => {
+      if (duplicatesTimeoutRef.current) clearTimeout(duplicatesTimeoutRef.current);
+    };
+  }, [duplicatesRangeDraft, dupsDirty, isInitialized]);
+
+  // ===== Business selector handler =====
+  const handleBusinessChange = useCallback(
+    (newBusinessId: string) => {
+      setBusinessId(newBusinessId);
+      setAds([]);
+      setCurrentPage(1);
+
+      // Update URL immediately (keep other params)
+      updateUrlParams({
+        businessId: newBusinessId,
+        page: selectedPage,
+        niche: selectedNiche,
+        format: displayFormat,
+        startDate,
+        endDate,
+        duplicatesApplied: dupsEverApplied ? duplicatesRangeApplied : null,
+        pageNumber: 1,
+      });
+    },
+    [
+      updateUrlParams,
+      selectedPage,
+      selectedNiche,
+      displayFormat,
+      startDate,
+      endDate,
+      dupsEverApplied,
+      duplicatesRangeApplied,
+    ]
+  );
 
   // ===== Client-side format filter =====
   const filteredAds = useMemo(() => {
     if (displayFormat === 'ALL') return ads;
-    return ads.filter((ad) => ad.display_format === displayFormat);
+    return ads.filter((ad) => (ad as any).display_format === displayFormat);
   }, [ads, displayFormat]);
 
-  // Persist display format in URL without reloading data
-  useEffect(() => {
-    if (!isInitialized) return;
-    updateUrlParams({
-      page: selectedPage,
-      niche: selectedNiche,
-      format: displayFormat,
-      startDate,
-      endDate,
-      duplicatesApplied: dupsEverApplied ? duplicatesRangeApplied : null,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayFormat]);
+  // ===== Pagination helpers =====
+  const paginationRange = useMemo(() => {
+    const maxButtons = 7;
+    if (totalPages <= maxButtons) {
+      return Array.from({ length: totalPages }, (_v, idx) => idx + 1);
+    }
+
+    const start = Math.max(1, currentPage - 3);
+    const end = Math.min(totalPages, start + maxButtons - 1);
+    const adjustedStart = Math.max(1, end - maxButtons + 1);
+
+    return Array.from({ length: end - adjustedStart + 1 }, (_v, idx) => adjustedStart + idx);
+  }, [currentPage, totalPages]);
+
+  const handlePageChange = useCallback(
+    (pageNum: number) => {
+      const nextPage = clamp(pageNum, 1, totalPages || 1);
+      if (nextPage === currentPage) return;
+      setCurrentPage(nextPage);
+    },
+    [currentPage, totalPages]
+  );
+
+  const renderPagination = () => {
+    if (totalPages <= 1) return null;
+
+    return (
+      <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+        <button
+          type="button"
+          onClick={() => handlePageChange(currentPage - 1)}
+          disabled={currentPage === 1 || loading}
+          className="group px-4 py-2 rounded-lg bg-white border-2 border-slate-200 text-slate-700 font-medium shadow-sm hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-200 disabled:hover:bg-white transition-all duration-200"
+        >
+          <span className="flex items-center gap-1.5">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+            <span className="hidden sm:inline">Previous</span>
+          </span>
+        </button>
+
+        <div className="flex items-center gap-1.5">
+          {paginationRange.map((pageNum) => (
+            <button
+              key={pageNum}
+              type="button"
+              onClick={() => handlePageChange(pageNum)}
+              disabled={loading && pageNum === currentPage}
+              className={`min-w-[2.5rem] h-10 px-2.5 rounded-lg font-semibold text-sm transition-all duration-200 shadow-sm ${
+                pageNum === currentPage
+                  ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white border-2 border-blue-600 shadow-blue-200 scale-105'
+                  : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+              aria-current={pageNum === currentPage ? 'page' : undefined}
+            >
+              {pageNum}
+            </button>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => handlePageChange(currentPage + 1)}
+          disabled={currentPage >= totalPages || loading}
+          className="group px-4 py-2 rounded-lg bg-white border-2 border-slate-200 text-slate-700 font-medium shadow-sm hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-200 disabled:hover:bg-white transition-all duration-200"
+        >
+          <span className="flex items-center gap-1.5">
+            <span className="hidden sm:inline">Next</span>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </span>
+        </button>
+
+        <div className="sm:hidden text-xs text-slate-600 font-medium">
+          Page {currentPage} of {totalPages}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -483,9 +582,7 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
           {/* Business selector */}
           {businesses.length > 0 && (
             <div className="mt-4 mb-4">
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                Select Business:
-              </label>
+              <label className="block text-sm font-medium text-slate-700 mb-2">Select Business:</label>
               <select
                 value={businessId || ''}
                 onChange={(e) => handleBusinessChange(e.target.value)}
@@ -510,31 +607,37 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
               displayFormat !== 'ALL') && (
               <>
                 <span className="text-sm text-slate-600">Active filters:</span>
+
                 {selectedPage && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs">
                     📄 {selectedPage}
                   </span>
                 )}
+
                 {selectedNiche && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-purple-100 text-purple-700 text-xs">
                     🎯 {selectedNiche === 'passion' ? 'Romantic novels' : selectedNiche}
                   </span>
                 )}
+
                 {startDate && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-green-100 text-green-700 text-xs">
                     📅 from {startDate}
                   </span>
                 )}
+
                 {endDate && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-green-100 text-green-700 text-xs">
                     📅 to {endDate}
                   </span>
                 )}
+
                 {dupsEverApplied && duplicatesStats.max > duplicatesStats.min && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-orange-100 text-orange-700 text-xs">
                     📊 {duplicatesRangeApplied[0]}-{duplicatesRangeApplied[1]} duplicates
                   </span>
                 )}
+
                 {displayFormat !== 'ALL' && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs">
                     {displayFormat === 'IMAGE' ? '🖼️ Images' : '🎬 Videos'}
@@ -542,6 +645,7 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
                 )}
               </>
             )}
+
             {loading && <span className="text-sm text-blue-600 animate-pulse">⏳ Loading...</span>}
             {!loading && ads.length > 0 && <span className="text-sm text-slate-600">✓ {ads.length} ads</span>}
           </div>
@@ -574,7 +678,6 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
             >
               <option value="">All</option>
               <option value="drama">Drama</option>
-              {/* store DB-native value to avoid extra mapping issues */}
               <option value="passion">Romantic novels</option>
             </select>
           </div>
@@ -593,21 +696,11 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
                     '& .MuiOutlinedInput-root': {
                       borderColor: '#cbd5e1',
                       backgroundColor: '#ffffff',
-                      '&:hover': {
-                        borderColor: '#94a3b8',
-                      },
-                      '&.Mui-focused': {
-                        backgroundColor: '#f8fafc',
-                      },
+                      '&:hover': { borderColor: '#94a3b8' },
+                      '&.Mui-focused': { backgroundColor: '#f8fafc' },
                     },
-                    '& .MuiInputBase-input': {
-                      color: '#0f172a',
-                      fontSize: '0.875rem',
-                    },
-                    '& .MuiInputLabel-root': {
-                      color: '#475569',
-                      fontSize: '0.875rem',
-                    },
+                    '& .MuiInputBase-input': { color: '#0f172a', fontSize: '0.875rem' },
+                    '& .MuiInputLabel-root': { color: '#475569', fontSize: '0.875rem' },
                   },
                 },
               }}
@@ -628,21 +721,11 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
                     '& .MuiOutlinedInput-root': {
                       borderColor: '#cbd5e1',
                       backgroundColor: '#ffffff',
-                      '&:hover': {
-                        borderColor: '#94a3b8',
-                      },
-                      '&.Mui-focused': {
-                        backgroundColor: '#f8fafc',
-                      },
+                      '&:hover': { borderColor: '#94a3b8' },
+                      '&.Mui-focused': { backgroundColor: '#f8fafc' },
                     },
-                    '& .MuiInputBase-input': {
-                      color: '#0f172a',
-                      fontSize: '0.875rem',
-                    },
-                    '& .MuiInputLabel-root': {
-                      color: '#475569',
-                      fontSize: '0.875rem',
-                    },
+                    '& .MuiInputBase-input': { color: '#0f172a', fontSize: '0.875rem' },
+                    '& .MuiInputLabel-root': { color: '#475569', fontSize: '0.875rem' },
                   },
                 },
               }}
@@ -650,100 +733,107 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
           </div>
         </div>
 
-        {/* ===== Proper duplicates range slider (draft + apply) ===== */}
-        {duplicatesStats.max > duplicatesStats.min && (
-          <div className="mb-6 max-w-md">
-            <div className="mb-2">
-              <label className="block text-sm font-medium text-slate-700 mb-1">Duplicates</label>
-              <div className="text-sm text-slate-600">
-                {duplicatesRangeDraft[0]} – {duplicatesRangeDraft[1]}
-                {dupsDirty && <span className="ml-2 text-blue-600">(applying...)</span>}
-              </div>
+        {/* ===== Duplicates slider and Pagination ===== */}
+        <div className="mb-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+          {/* Duplicates slider */}
+          {duplicatesStats.max > 0 && (
+            <div className="flex-1 max-w-md">
+              {duplicatesStats.max === duplicatesStats.min ? (
+                <div className="p-3 bg-slate-100 border border-slate-200 rounded-lg text-sm text-slate-700">
+                  <div className="font-medium mb-1">Duplicates Range</div>
+                  <div>
+                    All ads have the same number of duplicates: <strong>{duplicatesStats.min}</strong>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-2">
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Duplicates</label>
+                    <div className="text-sm text-slate-600">
+                      {duplicatesRangeDraft[0]} – {duplicatesRangeDraft[1]}
+                      {dupsDirty && <span className="ml-2 text-blue-600">(applying...)</span>}
+                    </div>
+                  </div>
+
+                  <Box
+                    sx={{
+                      px: 2,
+                      py: 2,
+                      bgcolor: 'white',
+                      borderRadius: '0.5rem',
+                      border: '1px solid #e2e8f0',
+                      boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 1 }}>
+                      <Typography variant="caption" sx={{ color: '#64748b', minWidth: '24px' }}>
+                        {duplicatesStats.min}
+                      </Typography>
+
+                      <Slider
+                        value={duplicatesRangeDraft}
+                        onChange={(_e, newValue) => {
+                          const v = newValue as [number, number];
+                          setDuplicatesRangeDraft(v);
+                          setDupsDirty(true);
+                        }}
+                        onChangeCommitted={(_e, newValue) => {
+                          const v = newValue as [number, number];
+                          setDuplicatesRangeDraft(v);
+                          setDuplicatesRangeApplied(v);
+                          setDupsDirty(false);
+                          setDupsEverApplied(true);
+
+                          // Persist immediately (so back navigation keeps the range)
+                          updateUrlParams({
+                            businessId,
+                            page: selectedPage,
+                            niche: selectedNiche,
+                            format: displayFormat,
+                            startDate,
+                            endDate,
+                            duplicatesApplied: v,
+                          });
+                        }}
+                        min={duplicatesStats.min}
+                        max={duplicatesStats.max}
+                        step={1}
+                        disableSwap
+                        valueLabelDisplay="auto"
+                        sx={{
+                          flex: 1,
+                          '& .MuiSlider-thumb': { height: 16, width: 16 },
+                          '& .MuiSlider-track': { height: 5 },
+                          '& .MuiSlider-rail': { height: 5 },
+                        }}
+                      />
+
+                      <Typography variant="caption" sx={{ color: '#64748b', minWidth: '24px', textAlign: 'right' }}>
+                        {duplicatesStats.max}
+                      </Typography>
+                    </Box>
+                  </Box>
+                </>
+              )}
             </div>
-
-            <Box
-              sx={{
-                px: 2,
-                py: 2,
-                bgcolor: 'white',
-                borderRadius: '0.5rem',
-                border: '1px solid #e2e8f0',
-                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-              }}
-            >
-              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 1 }}>
-                <Typography variant="caption" sx={{ color: '#64748b', minWidth: '24px' }}>
-                  {duplicatesStats.min}
-                </Typography>
-
-                <Slider
-                  value={duplicatesRangeDraft}
-                  onChange={(_e, newValue) => {
-                    const v = newValue as [number, number];
-                    setDuplicatesRangeDraft(v);
-                    setDupsDirty(true);
-                    // Auto-apply happens via useEffect with debounce
-                  }}
-                  onChangeCommitted={(_e, newValue) => {
-                    const v = newValue as [number, number];
-                    setDuplicatesRangeDraft(v);
-                    setDuplicatesRangeApplied(v);
-                    setDupsDirty(false);
-                    setDupsEverApplied(true);
-
-                    // Persist immediately so back navigation keeps the range
-                    updateUrlParams({
-                      page: selectedPage,
-                      niche: selectedNiche,
-                      format: displayFormat,
-                      startDate,
-                      endDate,
-                      duplicatesApplied: v,
-                    });
-                  }}
-                  min={duplicatesStats.min}
-                  max={duplicatesStats.max}
-                  step={1}
-                  disableSwap
-                  valueLabelDisplay="auto"
-                  sx={{
-                    flex: 1,
-                    '& .MuiSlider-thumb': {
-                      height: 16,
-                      width: 16,
-                    },
-                    '& .MuiSlider-track': {
-                      height: 5,
-                    },
-                    '& .MuiSlider-rail': {
-                      height: 5,
-                    },
-                  }}
-                />
-
-                <Typography
-                  variant="caption"
-                  sx={{ color: '#64748b', minWidth: '24px', textAlign: 'right' }}
-                >
-                  {duplicatesStats.max}
-                </Typography>
-              </Box>
-            </Box>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* ===== View toggle (ALL/IMAGE/VIDEO) ===== */}
         <ViewToggle value={displayFormat} onChange={setDisplayFormat} />
 
+        {/* ===== Pagination top ===== */}
+        <div className="my-6">
+          {renderPagination()}
+        </div>
+
         {/* ===== Grid ===== */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-          {filteredAds.map((ad) => (
+          {filteredAds.map((ad, idx) => (
             <Link
-              key={ad.id}
-              href={`/view/${ad.ad_archive_id}?businessId=${businessId}&page=${selectedPage}${
-                dupsEverApplied
-                  ? `&duplicates=${duplicatesRangeApplied[0]}-${duplicatesRangeApplied[1]}`
-                  : ''
+              key={`${(ad as any).id}-${(ad as any).ad_archive_id}-${idx}`}
+              href={`/view/${(ad as any).ad_archive_id}?businessId=${businessId}&page=${selectedPage}${
+                dupsEverApplied ? `&duplicates=${duplicatesRangeApplied[0]}-${duplicatesRangeApplied[1]}` : ''
               }${selectedNiche ? `&niche=${selectedNiche}` : ''}${
                 displayFormat !== 'ALL' ? `&format=${displayFormat}` : ''
               }${startDate ? `&startDate=${startDate}` : ''}${endDate ? `&endDate=${endDate}` : ''}`}
@@ -766,18 +856,10 @@ function HomeClientContent({ searchParams }: { searchParams: ReturnType<typeof u
           </div>
         )}
 
-        {/* ===== Load more ===== */}
-        {currentPage < totalPages && (
-          <div className="mt-8 flex justify-center">
-            <button
-              onClick={loadMoreAds}
-              disabled={loadingMore}
-              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition font-medium"
-            >
-              {loadingMore ? 'Loading...' : 'Load More'}
-            </button>
-          </div>
-        )}
+        {/* ===== Pagination bottom ===== */}
+        <div className="mt-8">
+          {renderPagination()}
+        </div>
       </div>
     </div>
   );

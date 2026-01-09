@@ -9,11 +9,12 @@ import { createClient } from '@/utils/supabase/server';
 
 interface PageProps {
   params: Promise<{ id: string }>;
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }
 
-export default async function ViewDetailsPage({ params, searchParams }: PageProps) {
+export default async function ViewDetailsPage({ params, searchParams: searchParamsPromise }: PageProps) {
   const { id: adArchiveId } = await params;
+  const searchParams = await searchParamsPromise;
   
   // Get user's business
   const supabase = await createClient();
@@ -111,7 +112,7 @@ export default async function ViewDetailsPage({ params, searchParams }: PageProp
       <div className="container mx-auto px-6 py-12 max-w-5xl">
         <Link 
           href={(() => {
-            const allowed = ['business', 'page', 'niche', 'duplicates', 'format'];
+            const allowed = ['businessId', 'page', 'niche', 'duplicates', 'format', 'startDate', 'endDate'];
             const params = new URLSearchParams();
             if (searchParams) {
               for (const key of allowed) {
@@ -227,7 +228,7 @@ export default async function ViewDetailsPage({ params, searchParams }: PageProp
                 <h3 className="text-slate-900 font-semibold mb-3">Representative DB Data</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
                   {Object.entries(ad.raw as Record<string, any>)
-                    .filter(([key]) => !['embedding_vec', 'cards_json', 'cards_count', 'raw_json'].includes(key))
+                    .filter(([key]) => !['embedding_vec_512', 'cards_json', 'cards_count', 'raw_json'].includes(key))
                     .map(([key, value]) => {
                       const isLink = typeof value === 'string' && /^https?:\/\//i.test(value);
                       const renderedValue = isLink
