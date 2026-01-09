@@ -31,7 +31,7 @@ function normalizeNiche(niche?: string) {
 }
 
 // Helper to get business slug from business_id
-async function getBusinessSlug(businessId: string): Promise<string | null> {
+export async function getBusinessSlug(businessId: string): Promise<string | null> {
   const { data } = await supabase
     .from('businesses')
     .select('slug')

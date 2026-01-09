@@ -136,7 +136,7 @@ export default function SetupPage() {
         )}
         {invalidUrls.length > 0 && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded text-amber-700 text-sm">
-            ⚠️ Warning: {invalidUrls.length} links don't appear to be from Facebook/Meta Ads
+            ⚠️ Warning: {invalidUrls.length} links don&apos;t appear to be from Facebook/Meta Ads
           </div>
         )}
 
