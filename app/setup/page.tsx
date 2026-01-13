@@ -3,8 +3,11 @@
 import { useCallback, useMemo, useState, useEffect } from "react";
 import { createClient } from '@/utils/supabase/client'
 import { useRouter } from 'next/navigation'
+import { isUserAdmin, getUserBusinesses } from '@/utils/supabase/admin';
 
 type LinkRow = { id: string; url: string };
+type Business = { id: string; slug: string; name?: string; owner_id?: string };
+
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 export default function SetupPage() {
@@ -15,11 +18,37 @@ export default function SetupPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  
+  // Business selection
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [selectedBusinessId, setSelectedBusinessId] = useState<string | null>(null);
+  const [businessesLoading, setBusinessesLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      setUserId(data.user?.id ?? null);
-    });
+    const initUser = async () => {
+      const { data } = await supabase.auth.getUser();
+      const userId = data.user?.id ?? null;
+      setUserId(userId);
+
+      if (userId) {
+        // Check if user is admin
+        const adminStatus = await isUserAdmin(userId);
+        setIsAdmin(adminStatus);
+        
+        // Load businesses (all if admin, only owned if regular user)
+        const userBusinesses = await getUserBusinesses(userId);
+
+        if (userBusinesses && userBusinesses.length > 0) {
+          const typedBiz = userBusinesses as Business[];
+          setBusinesses(typedBiz);
+          setSelectedBusinessId(typedBiz[0].id);
+        }
+      }
+      setBusinessesLoading(false);
+    };
+    
+    initUser();
   }, [supabase]);
 
   const nonEmptyUrls = useMemo(
@@ -62,34 +91,35 @@ export default function SetupPage() {
     }
   };
 
-  const downloadJson = (data: unknown, filename: string) => {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-  };
-
   const onSend = async () => {
     setError(null); setSuccessMsg(null);
     if (!nonEmptyUrls.length) { setError('Add at least one link'); return; }
+    if (!selectedBusinessId) { setError('Please select a business'); return; }
     setSending(true);
     try {
+      console.log('📤 Sending to Apify:', { businessId: selectedBusinessId, linksCount: nonEmptyUrls.length });
+      console.log('🔗 Links:', nonEmptyUrls);
       const res = await fetch('/api/forward-webhook', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ links: nonEmptyUrls })
+        body: JSON.stringify({ 
+          links: nonEmptyUrls,
+          businessId: selectedBusinessId
+        })
       });
       const ct = res.headers.get('content-type') || '';
       if (!res.ok) {
         const msg = ct.includes('application/json') ? (await res.json()).message : await res.text();
-        throw new Error(msg || 'Webhook error');
+        throw new Error(msg || 'Apify error');
       }
       const data = ct.includes('application/json') ? await res.json() : await res.text();
-      const filename = `facebook_meta_ads_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-      downloadJson(data, filename);
-      setSuccessMsg('JSON downloaded successfully');
+      
+      console.log('✅ Apify Results:', data);
+      console.log('📊 Complete Response:', JSON.stringify(data, null, 2));
+      
+      setSuccessMsg('Data saved to database! Check console for details.');
     } catch (e: any) {
+      console.error('❌ Error:', e?.message);
       setError(e?.message || 'Unknown error');
     } finally {
       setSending(false);
@@ -117,9 +147,46 @@ export default function SetupPage() {
         
         {/* Title Section */}
         <div className="mb-6">
-          <h2 className="text-2xl font-medium text-slate-900 mb-2">Send Links to Webhook</h2>
-          <p className="text-slate-600">Paste Facebook/Meta Ads Library links and send them to your webhook.</p>
+          <h2 className="text-2xl font-medium text-slate-900 mb-2">Send Links to Apify</h2>
+          <p className="text-slate-600">Paste Facebook/Meta Ads Library links to extract ad data via Apify.</p>
         </div>
+
+        {/* Business Selection */}
+        {businessesLoading ? (
+          <div className="mb-6 p-3 bg-slate-50 border border-slate-200 rounded text-slate-600 text-sm">
+            Loading businesses...
+          </div>
+        ) : businesses.length === 0 ? (
+          <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded text-amber-700 text-sm">
+            ⚠️ You don't own any businesses. Contact an administrator to set up access.
+          </div>
+        ) : (
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-slate-900 mb-2">
+              Select Business
+              {isAdmin && ' (Admin: all businesses visible)'}
+            </label>
+            {businesses.length === 1 ? (
+              <div className="px-3 py-2 border border-slate-300 rounded bg-slate-50 text-slate-700 text-sm">
+                {businesses[0].name || businesses[0].slug}
+              </div>
+            ) : (
+              <select
+                value={selectedBusinessId || ''}
+                onChange={(e) => setSelectedBusinessId(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded text-sm focus:border-slate-400 focus:ring-1 focus:ring-slate-400 outline-none"
+              >
+                <option value="">Choose a business...</option>
+                {businesses.map((biz) => (
+                  <option key={biz.id} value={biz.id}>
+                    {biz.name || biz.slug}
+                    {isAdmin && biz.owner_id !== userId ? ' (owned by other)' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
 
         {/* Alerts */}
         {error && (
@@ -176,9 +243,9 @@ export default function SetupPage() {
                     <input
                       type="url"
                       value={row.url}
-                      onChange={(e) => updateRow(row.id, e.target.value)}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateRow(row.id, e.target.value)}
                       placeholder="https://www.facebook.com/ads/library/?id=..."
-                      className={`w-full px-3 py-2 border rounded text-sm transition-colors ${
+                      className={`w-full px-3 py-2 border rounded text-sm transition-colors text-slate-900 ${
                         row.url && !isLikelyMetaAds(row.url)
                           ? 'border-red-300 focus:border-red-400 focus:ring-1 focus:ring-red-400'
                           : 'border-slate-300 focus:border-slate-400 focus:ring-1 focus:ring-slate-400'
@@ -207,13 +274,13 @@ export default function SetupPage() {
         <div className="flex items-center justify-between">
           <button
             onClick={onSend}
-            disabled={sending || nonEmptyUrls.length === 0}
+            disabled={sending || nonEmptyUrls.length === 0 || !selectedBusinessId || businessesLoading}
             className="px-6 py-2.5 bg-slate-900 text-white rounded hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
           >
-            {sending ? 'Sending...' : 'Send to Webhook'}
+            {sending ? 'Processing with Apify...' : 'Send to Apify'}
           </button>
           <p className="text-xs text-slate-500">
-            Webhook configured via <code className="bg-slate-100 px-1.5 py-0.5 rounded">WEBHOOK_URL</code>
+            Powered by <code className="bg-slate-100 px-1.5 py-0.5 rounded">Apify</code>
           </p>
         </div>
 
@@ -222,9 +289,11 @@ export default function SetupPage() {
           <h3 className="text-sm font-medium text-slate-900 mb-2">How it works</h3>
           <ul className="text-sm text-slate-600 space-y-1">
             <li>1. Add or paste links from Facebook Ads Library</li>
-            <li>2. Your client_id is automatically included with the request</li>
-            <li>3. Webhook processes data and returns a JSON file</li>
-            <li>4. File downloads automatically to your browser</li>
+            <li>2. Select your business to associate with the data</li>
+            <li>3. Request is sent to Apify actor for processing</li>
+            <li>4. Results are polled and returned when ready</li>
+            <li>5. JSON file downloads automatically</li>
+            <li>6. Check browser console (F12) for detailed logs</li>
           </ul>
         </div>
       </main>

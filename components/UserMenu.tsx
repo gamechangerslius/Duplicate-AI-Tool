@@ -4,11 +4,13 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { isUserAdmin } from '@/utils/supabase/admin'
 
 export function UserMenu() {
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [isAdmin, setIsAdmin] = useState(false)
   const supabase = createClient()
   const router = useRouter()
 
@@ -17,6 +19,13 @@ export function UserMenu() {
     const getUser = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       setUser(user)
+      
+      // Check if user is admin
+      if (user?.id) {
+        const adminStatus = await isUserAdmin(user.id)
+        setIsAdmin(adminStatus)
+      }
+      
       setLoading(false)
     }
     getUser()
@@ -24,6 +33,9 @@ export function UserMenu() {
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
+      if (session?.user?.id) {
+        isUserAdmin(session.user.id).then(setIsAdmin)
+      }
     })
 
     return () => subscription.unsubscribe()
@@ -93,7 +105,14 @@ export function UserMenu() {
       {dropdownOpen && (
         <div className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-2xl border border-slate-200 py-2 z-50">
           <div className="px-4 py-3 border-b border-slate-200">
-            <div className="text-sm font-medium text-slate-900 truncate">{name}</div>
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-medium text-slate-900 truncate">{name}</div>
+              {isAdmin && (
+                <span className="text-xs font-bold px-2 py-1 bg-yellow-100 text-yellow-800 rounded whitespace-nowrap">
+                  👑 ADMIN
+                </span>
+              )}
+            </div>
             <div className="text-xs text-slate-500 truncate">{email}</div>
           </div>
           

@@ -15,7 +15,7 @@ import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
 import { enUS } from '@mui/x-date-pickers/locales';
 import dayjs from 'dayjs';
 
-import { fetchAds, fetchPageNames } from '@/utils/supabase/db';
+import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/utils/supabase/db';
 import type { Ad } from '@/lib/types';
 import { AdCard } from '@/components/AdCard';
 import { ViewToggle } from '@/components/ViewToggle';
@@ -64,6 +64,10 @@ function HomeClientContent({
 
   // ===== Loading flags =====
   const [loading, setLoading] = useState(true);
+  
+  // ===== Auth state =====
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [authCheckLoading, setAuthCheckLoading] = useState(true);
 
   // ===== Pagination =====
   const [currentPage, setCurrentPage] = useState(1);
@@ -80,7 +84,7 @@ function HomeClientContent({
 
   // ===== Business ID and list =====
   const [businessId, setBusinessId] = useState<string | null>(null);
-  const [businesses, setBusinesses] = useState<{ id: string; slug: string; name?: string }[]>([]);
+  const [businesses, setBusinesses] = useState<{ id: string; slug: string; name?: string; accessStatus?: 'owner' | 'access' | 'view' }[]>([]);
 
   // ===== Filters =====
   const [selectedPage, setSelectedPage] = useState<string>('');
@@ -153,6 +157,51 @@ function HomeClientContent({
   }, [dupsEverApplied, duplicatesRangeApplied]);
 
   /**
+   * Load duplicates stats from the database for the selected business and filters.
+   */
+  const loadDuplicatesStats = useCallback(async () => {
+    if (!businessId) return;
+
+    const nicheForDb = selectedNiche ? normalizeNicheForDb(selectedNiche) : undefined;
+
+    try {
+      const stats = await fetchDuplicatesStats(
+        businessId,
+        selectedPage || undefined,
+        nicheForDb,
+        {
+          startDate: startDate || undefined,
+          endDate: endDate || undefined,
+          displayFormat: displayFormat === 'ALL' ? undefined : displayFormat,
+        }
+      );
+
+      console.log('📊 Loaded duplicates stats:', stats);
+
+      setDuplicatesStats(stats);
+
+      // If user never applied duplicates filter, set to full range
+      if (!dupsEverApplied) {
+        setDuplicatesRangeDraft([stats.min, stats.max]);
+        setDuplicatesRangeApplied([stats.min, stats.max]);
+        setDupsDirty(false);
+      } else {
+        // Clamp existing ranges to new bounds
+        setDuplicatesRangeApplied(([a, b]) => {
+          const next: [number, number] = [clamp(a, stats.min, stats.max), clamp(b, stats.min, stats.max)];
+          return next[0] === a && next[1] === b ? [a, b] : next;
+        });
+        setDuplicatesRangeDraft(([a, b]) => {
+          const next: [number, number] = [clamp(a, stats.min, stats.max), clamp(b, stats.min, stats.max)];
+          return next[0] === a && next[1] === b ? [a, b] : next;
+        });
+      }
+    } catch (err) {
+      console.error('loadDuplicatesStats error:', err);
+    }
+  }, [businessId, selectedPage, selectedNiche, startDate, endDate, displayFormat, dupsEverApplied]);
+
+  /**
    * Load page names for selected business.
    */
   const loadPageNames = useCallback(async () => {
@@ -181,6 +230,7 @@ function HomeClientContent({
             competitorNiche: nicheForDb,
             startDate: startDate || undefined,
             endDate: endDate || undefined,
+            displayFormat: displayFormat === 'ALL' ? undefined : displayFormat,
           },
           { page: pageToLoad, perPage: PER_PAGE }
         );
@@ -194,55 +244,8 @@ function HomeClientContent({
         setLoading(false);
       }
     },
-    [businessId, selectedPage, selectedNiche, startDate, endDate, buildDuplicatesFilter]
+    [businessId, selectedPage, selectedNiche, startDate, endDate, displayFormat, buildDuplicatesFilter]
   );
-
-  /**
-   * Compute duplicates stats from currently loaded ads.
-   * We avoid recomputing while a fetch is in progress to keep slider bounds stable.
-   */
-  const computeDuplicatesStatsFromAds = useCallback(() => {
-    if (!ads || ads.length === 0) return;
-
-    const counts = ads
-      .map((ad) => Number((ad as any).duplicates_count || 0))
-      .filter((n) => Number.isFinite(n) && n > 0);
-
-    if (counts.length === 0) {
-      // fallback bounds if backend returns no duplicates_count
-      setDuplicatesStats({ min: 1, max: 100 });
-      return;
-    }
-
-    const nextStats = { min: Math.min(...counts), max: Math.max(...counts) };
-
-    setDuplicatesStats((prev) =>
-      prev.min === nextStats.min && prev.max === nextStats.max ? prev : nextStats
-    );
-
-    // If user never applied duplicates filter, keep it full-range by default.
-    if (!dupsEverApplied) {
-      setDuplicatesRangeDraft((prev) =>
-        prev[0] === nextStats.min && prev[1] === nextStats.max ? prev : [nextStats.min, nextStats.max]
-      );
-      setDuplicatesRangeApplied((prev) =>
-        prev[0] === nextStats.min && prev[1] === nextStats.max ? prev : [nextStats.min, nextStats.max]
-      );
-      setDupsDirty(false);
-      return;
-    }
-
-    // If user applied before, clamp applied & draft into new bounds.
-    setDuplicatesRangeApplied(([a, b]) => {
-      const next: [number, number] = [clamp(a, nextStats.min, nextStats.max), clamp(b, nextStats.min, nextStats.max)];
-      return next[0] === a && next[1] === b ? [a, b] : next;
-    });
-
-    setDuplicatesRangeDraft(([a, b]) => {
-      const next: [number, number] = [clamp(a, nextStats.min, nextStats.max), clamp(b, nextStats.min, nextStats.max)];
-      return next[0] === a && next[1] === b ? [a, b] : next;
-    });
-  }, [ads, dupsEverApplied]);
 
   // ===== 1) Init business + filters from URL (run once) =====
   useEffect(() => {
@@ -255,53 +258,77 @@ function HomeClientContent({
         data: { user },
       } = await supabase.auth.getUser();
 
+      // Check authentication status
       if (!user) {
-        console.error('No user found');
+        console.log('User not authenticated');
+        setIsAuthenticated(false);
+        setAuthCheckLoading(false);
         return;
       }
+
+      setIsAuthenticated(true);
+      setAuthCheckLoading(false);
 
       // businessId from URL (optional)
       const rawBusinessParam = searchParams.get('businessId');
       const currentBusinessId = rawBusinessParam ? rawBusinessParam.split(',')[0] : null;
 
-      // load owned + access businesses
-      const ownedPromise = supabase
+      // load ALL businesses
+      const allBusinessesResult = await supabase
         .from('businesses')
-        .select('id, slug, name')
-        .eq('owner_id', user.id);
+        .select('id, slug, name, owner_id')
+        .limit(1000);
 
-      const accessPromise = supabase
+      if (allBusinessesResult.error) {
+        console.error('Error fetching all businesses:', allBusinessesResult.error);
+        return;
+      }
+
+      const allBusinessesData = allBusinessesResult.data || [];
+      console.log('All available businesses:', allBusinessesData);
+      
+      if (allBusinessesData.length === 0) {
+        console.warn('No businesses available');
+        return;
+      }
+
+      // Get user's access info
+      const userOwnedBusinessIds = new Set<string>();
+      const userAccessBusinessIds = new Set<string>();
+
+      // Check owned businesses
+      for (const biz of allBusinessesData) {
+        if (biz.owner_id === user.id) {
+          userOwnedBusinessIds.add(biz.id);
+        }
+      }
+
+      // Check access via business_access table
+      const { data: accessData, error: accessError } = await supabase
         .from('business_access')
-        .select('businesses(id, slug, name)')
+        .select('business_id')
         .eq('user_id', user.id);
 
-      const [{ data: owned, error: eOwned }, { data: access, error: eAccess }] = await Promise.all([
-        ownedPromise,
-        accessPromise,
-      ]);
-
-      if (eOwned || eAccess) {
-        console.error('Error fetching businesses:', eOwned || eAccess);
-        return;
+      if (!accessError && accessData) {
+        for (const row of accessData) {
+          userAccessBusinessIds.add(row.business_id);
+        }
       }
 
-      const merged: { id: string; slug: string; name?: string }[] = [];
-      for (const row of owned || []) merged.push(row as any);
-      for (const row of access || []) {
-        const biz = (row as any).businesses;
-        if (biz) merged.push(biz);
-      }
+      // Add access status to each business
+      const allBusinessesWithStatus = allBusinessesData.map((biz: any) => ({
+        ...biz,
+        accessStatus: userOwnedBusinessIds.has(biz.id) 
+          ? 'owner' 
+          : userAccessBusinessIds.has(biz.id) 
+          ? 'access' 
+          : 'view',
+      }));
 
-      const dedup = Array.from(new Map(merged.map((b) => [b.id, b])).values());
-      if (dedup.length === 0) {
-        console.error('No businesses available for user');
-        return;
-      }
-
-      setBusinesses(dedup);
+      setBusinesses(allBusinessesWithStatus);
 
       // default business
-      const defaultBusiness = currentBusinessId || dedup[0].id;
+      const defaultBusiness = currentBusinessId || allBusinessesWithStatus[0].id;
       setBusinessId(defaultBusiness);
 
       // init filters from URL
@@ -422,14 +449,13 @@ function HomeClientContent({
     updateUrlParams,
   ]);
 
-  // ===== 5) Recompute duplicates stats AFTER initial load =====
+  // ===== 5) Load duplicates stats when filters change (but not page number) =====
   useEffect(() => {
     if (!isInitialized) return;
-    if (loading) return;
-    if (ads.length === 0) return;
+    if (!businessId) return;
 
-    computeDuplicatesStatsFromAds();
-  }, [isInitialized, loading, ads.length, computeDuplicatesStatsFromAds]);
+    loadDuplicatesStats();
+  }, [isInitialized, businessId, selectedPage, selectedNiche, startDate, endDate, displayFormat, loadDuplicatesStats]);
 
   // ===== 6) Debounced auto-apply duplicates draft -> applied =====
   useEffect(() => {
@@ -571,29 +597,82 @@ function HomeClientContent({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="container mx-auto px-6 py-12">
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-2">
-            <h1 className="text-4xl font-bold text-slate-900">Ad Gallery</h1>
-            <UserMenu />
+      {/* Check if authentication is loading */}
+      {authCheckLoading && (
+        <div className="flex items-center justify-center min-h-screen">
+          <div className="text-center">
+            <p className="text-slate-600">Loading...</p>
           </div>
-          <p className="text-slate-600">Browse creative advertisements</p>
+        </div>
+      )}
 
-          {/* Business selector */}
+      {/* Show login message if not authenticated */}
+      {!authCheckLoading && !isAuthenticated && (
+        <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+          <div className="bg-white rounded-xl shadow-lg p-12 text-center max-w-md w-full mx-4">
+            <div className="mb-6">
+              <svg className="w-16 h-16 mx-auto text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            </div>
+            <h2 className="text-2xl font-bold text-slate-900 mb-3">Login Required</h2>
+            <p className="text-slate-600 mb-8">You need to log in to view advertisements. Please sign in with your account to continue.</p>
+            <Link href="/auth" className="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors duration-200 shadow-md hover:shadow-lg">
+              Sign In
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* Show ads content if authenticated */}
+      {!authCheckLoading && isAuthenticated && (
+        <div className="container mx-auto px-6 py-12">
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-2">
+              <h1 className="text-4xl font-bold text-slate-900">Ad Gallery</h1>
+              <UserMenu />
+            </div>
+            <p className="text-slate-600">Browse creative advertisements</p>
+
+            {/* Business selector */}
           {businesses.length > 0 && (
             <div className="mt-4 mb-4">
               <label className="block text-sm font-medium text-slate-700 mb-2">Select Business:</label>
               <select
                 value={businessId || ''}
-                onChange={(e) => handleBusinessChange(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === 'CREATE_NEW') {
+                    // Redirect to auth page where user can create new business
+                    window.location.href = '/auth?action=create-business';
+                  } else {
+                    handleBusinessChange(value);
+                  }
+                }}
                 className="block w-full px-4 py-2 border border-slate-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent text-slate-900 bg-white"
               >
-                {businesses.map((biz) => (
-                  <option key={biz.id} value={biz.id}>
-                    {biz.name || biz.slug} ({biz.id.slice(0, 8)}...)
-                  </option>
-                ))}
+                {businesses.map((biz) => {
+                  const statusLabel = 
+                    biz.accessStatus === 'owner' ? 'owner' :
+                    biz.accessStatus === 'access' ? 'access' :
+                    'view only';
+                  const mainText = biz.name || biz.slug;
+                  return (
+                    <option key={biz.id} value={biz.id}>
+                      {mainText}  ·  {statusLabel}
+                    </option>
+                  );
+                })}
+                <option value="CREATE_NEW" style={{ fontWeight: 'bold', color: '#2563eb' }}>
+                  + Create New Business
+                </option>
               </select>
+              <style jsx>{`
+                select option {
+                  font-size: 14px;
+                  color: #1e293b;
+                }
+              `}</style>
             </div>
           )}
 
@@ -860,7 +939,8 @@ function HomeClientContent({
         <div className="mt-8">
           {renderPagination()}
         </div>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

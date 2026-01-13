@@ -285,49 +285,65 @@ export async function fetchDuplicatesStats(
   opts?: { startDate?: string; endDate?: string; displayFormat?: 'IMAGE' | 'VIDEO' | 'ALL' }
 ): Promise<{ min: number; max: number }> {
   try {
-    console.log('fetchDuplicatesStats called with:', { businessId, pageName, competitorNiche, opts });
+    console.log('🔍 fetchDuplicatesStats called with:', { businessId, pageName, competitorNiche, opts });
 
-    // Build query directly from ads table using duplicates_count field
-    let query = supabase
-      .from(ADS_TABLE)
-      .select('duplicates_count')
+    // Get all groups for the business from ads_groups table
+    const { data: groups, error: groupsErr } = await supabase
+      .from(ADS_GROUPS_TABLE)
+      .select('vector_group, items, rep_ad_archive_id')
       .eq('business_id', businessId);
 
-    if (pageName) query = query.eq('page_name', pageName);
-    if (competitorNiche) query = query.eq('competitor_niche', normalizeNiche(competitorNiche));
-    if (opts?.displayFormat && opts.displayFormat !== 'ALL') query = query.eq('display_format', opts.displayFormat);
-    if (opts?.startDate) query = query.gte('start_date_formatted', opts.startDate);
-    if (opts?.endDate) query = query.lte('end_date_formatted', opts.endDate);
-
-    const { data: ads, error: adsErr } = await query;
-
-    if (adsErr || !ads || ads.length === 0) {
-      console.error('fetchDuplicatesStats error:', adsErr);
+    if (groupsErr) {
+      console.error('❌ fetchDuplicatesStats groups error:', groupsErr);
       return { min: 1, max: 100 };
     }
 
-    const counts = ads
-      .map((ad: any) => Number(ad.duplicates_count || 0))
-      .filter((n) => !Number.isNaN(n) && n >= 0);
+    if (!groups || groups.length === 0) {
+      console.log('⚠️ No groups found for business');
+      return { min: 1, max: 100 };
+    }
 
-    // Show distribution
-    const countsList = counts.slice(0, 30);
-    const maxCount = Math.max(...counts);
-    const minCount = Math.min(...counts.filter((n) => n > 0));
-    console.log('First 30 duplicates_count values:', countsList);
-    console.log('Min count:', minCount, 'Max count:', maxCount);
-    console.log('Total ads:', ads.length, 'With duplicates > 0:', counts.filter((n) => n > 0).length);
+    let filteredGroups = groups;
+
+    // If filters provided, check representative ads
+    if (pageName || competitorNiche || opts?.displayFormat || opts?.startDate || opts?.endDate) {
+      const repIds = groups.map((g: any) => g.rep_ad_archive_id).filter(Boolean);
+      if (repIds.length > 0) {
+        let rq = supabase
+          .from(ADS_TABLE)
+          .select('ad_archive_id, page_name, competitor_niche, display_format, start_date_formatted, end_date_formatted')
+          .in('ad_archive_id', repIds);
+        
+        if (pageName) rq = rq.eq('page_name', pageName);
+        if (competitorNiche) rq = rq.eq('competitor_niche', normalizeNiche(competitorNiche));
+        if (opts?.displayFormat && opts.displayFormat !== 'ALL') rq = rq.eq('display_format', opts.displayFormat);
+        if (opts?.startDate) rq = rq.gte('start_date_formatted', opts.startDate);
+        if (opts?.endDate) rq = rq.lte('end_date_formatted', opts.endDate);
+        
+        const { data: reps, error: rErr } = await rq;
+        if (!rErr && reps) {
+          const allowed = new Set(reps.map((r: any) => r.ad_archive_id));
+          filteredGroups = filteredGroups.filter((g: any) => allowed.has(g.rep_ad_archive_id));
+        }
+      }
+    }
+
+    const counts = filteredGroups
+      .map((g: any) => Number(g.items || 0))
+      .filter((n) => !Number.isNaN(n) && n > 0);
+
+    console.log('📊 Group statistics:');
+    console.log('  Total groups:', filteredGroups.length);
+    console.log('  Counts distribution (first 30):', counts.slice(0, 30));
+    console.log('  Min:', Math.min(...counts), 'Max:', Math.max(...counts));
 
     if (counts.length === 0) return { min: 1, max: 100 };
 
-    const validCounts = counts.filter((n) => n > 0);
-    if (validCounts.length === 0) return { min: 1, max: 100 };
-
-    const result = { min: Math.min(...validCounts), max: Math.max(...validCounts) };
-    console.log('fetchDuplicatesStats result:', result);
+    const result = { min: Math.min(...counts), max: Math.max(...counts) };
+    console.log('✅ fetchDuplicatesStats result:', result);
     return result;
   } catch (err) {
-    console.error('Error fetching duplicates stats:', err);
+    console.error('💥 Error fetching duplicates stats:', err);
     return { min: 1, max: 100 };
   }
 }
@@ -349,97 +365,111 @@ export async function fetchAds(
     const t = nowMs();
     const cached = adsCacheMap.get(cacheKey);
     if (cached && t - cached.time < ADS_CACHE_DURATION) {
+      console.log('✅ Using cached data for fetchAds');
       return cached.data;
     }
 
     const page = pagination?.page ?? 1;
     const perPage = pagination?.perPage ?? PER_PAGE;
 
-    // Use ads_groups to fetch one representative per group for a business
     if (!filters?.businessId) {
-      console.warn('fetchAds requires businessId when using ads_groups');
+      console.warn('⚠️ fetchAds requires businessId');
       return { ads: [], total: 0 };
     }
 
-    const { data: groups, error: gErr, count: gCount } = await supabase
+    console.log('🔍 fetchAds called with filters:', filters, 'pagination:', pagination);
+
+    // Step 1: Get all groups from ads_groups table
+    const { data: groups, error: gErr } = await supabase
       .from(ADS_GROUPS_TABLE)
-      .select('vector_group, items, rep_ad_archive_id', { count: 'exact' })
+      .select('vector_group, items, rep_ad_archive_id')
       .eq('business_id', filters.businessId)
       .order('items', { ascending: false });
 
-    if (gErr || !groups) {
-      console.error('fetchAds groups error:', gErr);
+    if (gErr) {
+      console.error('❌ fetchAds groups error:', gErr);
       return { ads: [], total: 0 };
     }
 
-    // Apply duplicates range filter if provided
-    let filteredGroups = (groups as any[]).filter((g: any) => {
+    if (!groups || groups.length === 0) {
+      console.log('⚠️ No groups found');
+      return { ads: [], total: 0 };
+    }
+
+    console.log('📊 Found', groups.length, 'groups in ads_groups');
+
+    // Step 2: Filter by duplicates range
+    const minDup = filters?.duplicatesRange?.min ?? 0;
+    const maxDup = filters?.duplicatesRange?.max ?? Number.MAX_SAFE_INTEGER;
+
+    let filteredGroups = groups.filter((g: any) => {
       const items = Number(g.items || 0);
-      const minDup = filters?.duplicatesRange?.min ?? 0;
-      const maxDup = filters?.duplicatesRange?.max ?? Number.MAX_SAFE_INTEGER;
       return items >= minDup && items <= maxDup;
     });
 
-    // Optional: filter by rep ad fields (pageName, niche, format, dates)
+    console.log('📊 After duplicates filter:', filteredGroups.length, 'groups (min:', minDup, 'max:', maxDup, ')');
+
+    // Step 3: If other filters provided, check representative ads
     if (filters?.pageName || filters?.competitorNiche || filters?.displayFormat || filters?.startDate || filters?.endDate) {
-      const repIdsAll = filteredGroups.map((g: any) => g.rep_ad_archive_id).filter(Boolean);
-      if (repIdsAll.length) {
+      const repIds = filteredGroups.map((g: any) => g.rep_ad_archive_id).filter(Boolean);
+      if (repIds.length > 0) {
         let rq = supabase
           .from(ADS_TABLE)
           .select('ad_archive_id, page_name, competitor_niche, display_format, start_date_formatted, end_date_formatted')
-          .in('ad_archive_id', repIdsAll);
+          .in('ad_archive_id', repIds);
+        
         if (filters?.pageName) rq = rq.eq('page_name', filters.pageName);
         if (filters?.competitorNiche) rq = rq.eq('competitor_niche', normalizeNiche(filters.competitorNiche));
         if (filters?.displayFormat && filters.displayFormat !== 'ALL') rq = rq.eq('display_format', filters.displayFormat);
         if (filters?.startDate) rq = rq.gte('start_date_formatted', filters.startDate);
         if (filters?.endDate) rq = rq.lte('end_date_formatted', filters.endDate);
+        
         const { data: reps, error: rErr } = await rq;
         if (!rErr && reps) {
           const allowed = new Set(reps.map((r: any) => r.ad_archive_id));
           filteredGroups = filteredGroups.filter((g: any) => allowed.has(g.rep_ad_archive_id));
+          console.log('📊 After filters:', filteredGroups.length, 'groups');
         }
       }
     }
 
-    // Sort descending by items
-    filteredGroups.sort((a: any, b: any) => Number(b.items || 0) - Number(a.items || 0));
-
-    const totalGroups = gCount ?? filteredGroups.length;
+    const totalGroups = filteredGroups.length;
+    
+    // Step 4: Paginate
     const start = (page - 1) * perPage;
     const end = Math.min(start + perPage, filteredGroups.length);
     const pageGroups = filteredGroups.slice(start, end);
 
-    console.log('fetchAds: returning', pageGroups.length, 'groups of', totalGroups, 'total');
+    console.log('📄 Page', page, ': showing', pageGroups.length, 'of', totalGroups, 'groups');
 
-    // Resolve business slug for images
-    const businessSlug = filters.businessId ? await getBusinessSlug(filters.businessId) : null;
-
-    // Hydrate representative ad details
+    // Step 5: Fetch representative ad details for this page
     const repIds = pageGroups.map((g: any) => g.rep_ad_archive_id).filter(Boolean);
-    let adQ = supabase
+    const { data: repAds, error: repErr } = await supabase
       .from(ADS_TABLE)
       .select('ad_archive_id, business_id, title, page_name, text, caption, display_format, vector_group, competitor_niche, url, cards_json, start_date_formatted, end_date_formatted')
       .in('ad_archive_id', repIds);
 
-    const { data: repAds, error: repErr } = await adQ;
     if (repErr) {
-      console.error('fetchAds reps error:', repErr);
+      console.error('❌ fetchAds reps error:', repErr);
     }
+
     const repMap = new Map<string, any>();
     for (const row of repAds || []) repMap.set(row.ad_archive_id, row);
 
-    // Pre-fetch group dates
-    const groupDatesCache = new Map<number, { minStartDate: string | null; maxEndDate: string | null }>();
-    const uniqueVectorGroups = [...new Set(pageGroups.map((r: any) => r.vector_group))];
+    // Step 6: Resolve business slug for images
+    const businessSlug = await getBusinessSlug(filters.businessId);
 
-    // Fetch sequentially to avoid hammering RPC and hitting statement timeouts
+    // Step 7: Pre-fetch group dates
+    const groupDatesCache = new Map<number, { minStartDate: string | null; maxEndDate: string | null }>();
+    const uniqueVectorGroups = [...new Set(pageGroups.map((g: any) => g.vector_group))];
+
     for (const vg of uniqueVectorGroups) {
       if (vg === -1 || vg == null) continue;
       const dates = await getGroupDateRange(vg);
       groupDatesCache.set(vg, dates);
     }
 
-    // Resolve images
+    // Step 8: Resolve images
     const creativeUrls = await Promise.all(
       pageGroups.map((g: any) => {
         const rep = repMap.get(g.rep_ad_archive_id);
@@ -450,12 +480,22 @@ export async function fetchAds(
       })
     );
 
+    // Step 9: Build result
     const ads: Ad[] = pageGroups
       .map((g: any, i: number) => {
         const rep = repMap.get(g.rep_ad_archive_id);
-        if (!rep) return null as any;
-        const effectiveTitle = getEffectiveTitle(rep.title, rep.cards_json, { caption: rep.caption, text: rep.text });
-        const groupDates = groupDatesCache.get(g.vector_group) || { minStartDate: null, maxEndDate: null };
+        if (!rep) return null;
+        
+        const effectiveTitle = getEffectiveTitle(rep.title, rep.cards_json, { 
+          caption: rep.caption, 
+          text: rep.text 
+        });
+        
+        const groupDates = groupDatesCache.get(g.vector_group) || { 
+          minStartDate: null, 
+          maxEndDate: null 
+        };
+        
         return {
           id: rep.ad_archive_id,
           ad_archive_id: rep.ad_archive_id,
@@ -476,13 +516,15 @@ export async function fetchAds(
           image_url: creativeUrls[i] ?? undefined,
         };
       })
-      .filter(Boolean);
+      .filter(Boolean) as Ad[];
+
+    console.log('✅ Returning', ads.length, 'ads out of', totalGroups, 'total groups');
 
     const returnValue = { ads, total: totalGroups };
     adsCacheMap.set(cacheKey, { data: returnValue, time: nowMs() });
     return returnValue;
   } catch (err) {
-    console.error('Exception in fetchAds:', err);
+    console.error('💥 Exception in fetchAds:', err);
     return { ads: [], total: 0 };
   }
 }
