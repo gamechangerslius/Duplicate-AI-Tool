@@ -527,6 +527,24 @@ function HomeClientContent({
     return Array.from({ length: end - adjustedStart + 1 }, (_v, idx) => adjustedStart + idx);
   }, [currentPage, totalPages]);
 
+  // ===== Group ads by processed date ===== 
+  const adsByProcessedDate = useMemo(() => {
+    const groups = new Map<string, typeof filteredAds>();
+    
+    for (const ad of filteredAds) {
+      // Extract date from created_at or use current date
+      const dateStr = ad.created_at ? ad.created_at.split('T')[0] : new Date().toISOString().split('T')[0];
+      
+      if (!groups.has(dateStr)) {
+        groups.set(dateStr, []);
+      }
+      groups.get(dateStr)!.push(ad);
+    }
+
+    // Sort dates in descending order (newest first)
+    return Array.from(groups.entries()).sort(([dateA], [dateB]) => dateB.localeCompare(dateA));
+  }, [filteredAds]);
+
   const handlePageChange = useCallback(
     (pageNum: number) => {
       const nextPage = clamp(pageNum, 1, totalPages || 1);
@@ -906,21 +924,39 @@ function HomeClientContent({
           {renderPagination()}
         </div>
 
-        {/* ===== Grid ===== */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-          {filteredAds.map((ad, idx) => (
-            <Link
-              key={`${(ad as any).id}-${(ad as any).ad_archive_id}-${idx}`}
-              href={`/view/${(ad as any).ad_archive_id}?businessId=${businessId}&page=${selectedPage}${
-                dupsEverApplied ? `&duplicates=${duplicatesRangeApplied[0]}-${duplicatesRangeApplied[1]}` : ''
-              }${selectedNiche ? `&niche=${selectedNiche}` : ''}${
-                displayFormat !== 'ALL' ? `&format=${displayFormat}` : ''
-              }${startDate ? `&startDate=${startDate}` : ''}${endDate ? `&endDate=${endDate}` : ''}`}
-            >
-              <AdCard ad={ad} />
-            </Link>
-          ))}
-        </div>
+        {/* ===== Ads Grid with date grouping ===== */}
+        {adsByProcessedDate.map(([processedDate, adsForDate]) => (
+          <div key={processedDate} className="mb-8">
+            {/* Date Header */}
+            <div className="mb-4 flex items-center gap-3 px-2">
+              <div className="text-sm font-semibold text-slate-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+                📅 Processed on {new Date(processedDate).toLocaleDateString('uk-UA', { 
+                  weekday: 'short', 
+                  year: 'numeric', 
+                  month: 'short', 
+                  day: 'numeric' 
+                })}
+              </div>
+              <div className="text-xs text-slate-500">{adsForDate.length} creatives</div>
+            </div>
+
+            {/* Ads Grid for this date */}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
+              {adsForDate.map((ad, idx) => (
+                <Link
+                  key={`${(ad as any).id}-${(ad as any).ad_archive_id}-${idx}`}
+                  href={`/view/${(ad as any).ad_archive_id}?businessId=${businessId}&page=${selectedPage}${
+                    dupsEverApplied ? `&duplicates=${duplicatesRangeApplied[0]}-${duplicatesRangeApplied[1]}` : ''
+                  }${selectedNiche ? `&niche=${selectedNiche}` : ''}${
+                    displayFormat !== 'ALL' ? `&format=${displayFormat}` : ''
+                  }${startDate ? `&startDate=${startDate}` : ''}${endDate ? `&endDate=${endDate}` : ''}`}
+                >
+                  <AdCard ad={ad} />
+                </Link>
+              ))}
+            </div>
+          </div>
+        ))}
 
         {/* ===== Empty / Loading states ===== */}
         {!loading && filteredAds.length === 0 && (

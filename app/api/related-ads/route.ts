@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { getImageUrl, getBusinessSlug } from '@/utils/supabase/db';
+import { getImageUrl, getBusinessSlug, getGroupDateRange, getEffectiveTitle } from '@/utils/supabase/db';
 
 const ADS_TABLE = 'ads';
 
@@ -33,7 +33,7 @@ export async function GET(request: Request) {
 
     let q = supabase
       .from(ADS_TABLE)
-      .select('ad_archive_id, title, page_name, text, caption, display_format, vector_group, url')
+      .select('ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, competitor_niche, start_date_formatted, end_date_formatted, duplicates_count, cards_json')
       .eq('vector_group', vector_group)
       .eq('business_id', businessId)
       .order('ad_archive_id', { ascending: true })
@@ -51,20 +51,34 @@ export async function GET(request: Request) {
       return NextResponse.json({ error }, { status: 500 });
     }
 
-    const items = (data || []).map((ad) => ({
-      id: ad.ad_archive_id,
-      ad_archive_id: ad.ad_archive_id,
-      title: ad.title,
-      page_name: ad.page_name,
-      ad_text: (ad as any).text ?? null,
-      caption: (ad as any).caption ?? null,
-      url: (ad as any).url ?? null,
-      display_format: ad.display_format,
-      created_at: new Date().toISOString(),
-      vector_group: ad.vector_group,
-      meta_ad_url: `https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}`,
-      image_url: getImageUrl(ad.ad_archive_id, businessSlug),
-    }));
+    // Get group dates once for all ads
+    const groupDates = await getGroupDateRange(vector_group);
+
+    const items = (data || []).map((ad: any) => {
+      const effectiveTitle = getEffectiveTitle(ad.title, ad.cards_json, { 
+        caption: ad.caption, 
+        text: ad.text 
+      });
+      
+      return {
+        id: ad.ad_archive_id,
+        ad_archive_id: ad.ad_archive_id,
+        title: effectiveTitle,
+        page_name: ad.page_name,
+        ad_text: ad.text ?? null,
+        caption: ad.caption ?? null,
+        url: ad.url ?? null,
+        competitor_niche: ad.competitor_niche ?? null,
+        display_format: ad.display_format,
+        created_at: new Date().toISOString(),
+        vector_group: ad.vector_group,
+        start_date_formatted: ad.start_date_formatted ?? groupDates.minStartDate ?? undefined,
+        end_date_formatted: ad.end_date_formatted ?? groupDates.maxEndDate ?? undefined,
+        duplicates_count: ad.duplicates_count,
+        meta_ad_url: `https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}`,
+        image_url: getImageUrl(ad.ad_archive_id, businessSlug),
+      };
+    });
 
     const nextCursor = items.length > 0 ? items[items.length - 1].ad_archive_id : null;
     const hasMore = items.length === limit;

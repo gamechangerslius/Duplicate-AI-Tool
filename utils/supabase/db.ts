@@ -3,7 +3,7 @@ import type { Ad } from '../../lib/types';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const ADS_TABLE = 'ads';
-const ADS_GROUPS_TABLE = 'ads_groups';
+const ADS_GROUPS_TABLE = 'ads_groups_test';
 const STORAGE_BUCKET = 'creatives';
 const PER_PAGE = 24;
 
@@ -39,6 +39,72 @@ export async function getBusinessSlug(businessId: string): Promise<string | null
     .single();
   
   return data?.slug || null;
+}
+
+/**
+ * Get comprehensive metadata for a vector group.
+ * Returns: count, first_seen, last_seen, active_period (days), content_type
+ */
+export async function getGroupMetadata(vectorGroup: number, businessId: string): Promise<{
+  count: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  active_period_days: number | null;
+  content_types: ('IMAGE' | 'VIDEO')[];
+} | null> {
+  if (vectorGroup === -1 || vectorGroup == null) {
+    return null;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from(ADS_TABLE)
+      .select('start_date_formatted, end_date_formatted, display_format')
+      .eq('vector_group', vectorGroup)
+      .eq('business_id', businessId);
+
+    if (error || !data || data.length === 0) {
+      console.warn(`Failed to get metadata for group ${vectorGroup}:`, error);
+      return null;
+    }
+
+    // Extract dates and formats
+    const startDates: string[] = [];
+    const endDates: string[] = [];
+    const formats = new Set<'IMAGE' | 'VIDEO'>();
+
+    for (const row of data) {
+      if (row.start_date_formatted) startDates.push(row.start_date_formatted);
+      if (row.end_date_formatted) endDates.push(row.end_date_formatted);
+      if (row.display_format) formats.add(row.display_format);
+    }
+
+    // Find earliest first_seen and latest last_seen
+    const sortedStarts = startDates.sort();
+    const sortedEnds = endDates.sort();
+
+    const firstSeen = sortedStarts[0] || null;
+    const lastSeen = sortedEnds[sortedEnds.length - 1] || null;
+
+    // Calculate active period in days
+    let activePeriodDays: number | null = null;
+    if (firstSeen && lastSeen) {
+      const first = new Date(firstSeen);
+      const last = new Date(lastSeen);
+      activePeriodDays = Math.ceil((last.getTime() - first.getTime()) / (1000 * 60 * 60 * 24));
+    }
+
+    return {
+      count: data.length,
+      first_seen: firstSeen,
+      last_seen: lastSeen,
+      active_period_days: activePeriodDays,
+      content_types: Array.from(formats),
+    };
+  } catch (err) {
+    console.error('Error in getGroupMetadata:', err);
+    return null;
+  }
 }
 
 // Get creative URL from storage: creatives/{{businessSlug}}/{{ad_archive_id}}.png
@@ -189,7 +255,7 @@ function getTitleFromCards(cardsJson: any): string | null {
 }
 
 // Get effective title for an ad (prefers actual title, falls back to cards and other fields)
-function getEffectiveTitle(title: string | null, cardsJson: any, additionalFields?: { caption?: string | null; text?: string | null }): string {
+export function getEffectiveTitle(title: string | null, cardsJson: any, additionalFields?: { caption?: string | null; text?: string | null }): string {
   // Check if title is valid and not a placeholder/template
   const isValidTitle = 
     title && 
@@ -227,7 +293,7 @@ function getEffectiveTitle(title: string | null, cardsJson: any, additionalField
  * Results are cached to avoid repeated database queries.
  * Uses Supabase RPC function for optimized query.
  */
-async function getGroupDateRange(vectorGroup: number): Promise<{ minStartDate: string | null; maxEndDate: string | null }> {
+export async function getGroupDateRange(vectorGroup: number): Promise<{ minStartDate: string | null; maxEndDate: string | null }> {
   if (vectorGroup === -1 || vectorGroup == null) {
     return { minStartDate: null, maxEndDate: null };
   }

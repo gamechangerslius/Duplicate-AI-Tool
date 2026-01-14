@@ -11,6 +11,7 @@ export interface Ad {
   competitor_niche?: string;
   display_format: 'IMAGE' | 'VIDEO';
   created_at: string;
+  processed_date?: string; // Date when this creative was processed/fetched
   start_date_formatted: string | null | undefined;
   end_date_formatted: string | null | undefined;
   vector_group: number | null;

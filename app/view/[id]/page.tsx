@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 import { fetchAdByArchiveId, fetchRelatedAds, fetchGroupRepresentative, getImageUrl } from '@/utils/supabase/db';
 import { RelatedAdsGrid } from '@/components/RelatedAdsGrid';
+import { GroupMetadata } from '@/components/GroupMetadata';
 import Image from 'next/image';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
@@ -181,6 +182,9 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
                 {ad.duplicates_count} duplicates
               </div>
             )}
+
+            {/* Group Metadata Component */}
+            <GroupMetadata vectorGroup={ad.vector_group} businessId={businessId} />
           </div>
         </div>
 

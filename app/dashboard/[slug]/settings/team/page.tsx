@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useEffect, useState, useTransition, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -77,11 +77,7 @@ export default function TeamSettingsPage({ params }: { params: { slug: string } 
   })
 
   // Load data
-  useEffect(() => {
-    loadData()
-  }, [params.slug])
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true)
     
     // Check ownership
@@ -99,7 +95,12 @@ export default function TeamSettingsPage({ params }: { params: { slug: string } 
     }
     
     setLoading(false)
-  }
+  }, [params.slug])
+
+  // Load data on mount
+  useEffect(() => {
+    loadData()
+  }, [loadData])
 
   // Invite member
   async function onSubmit(data: InviteFormData) {

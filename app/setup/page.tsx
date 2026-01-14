@@ -24,6 +24,8 @@ export default function SetupPage() {
   const [selectedBusinessId, setSelectedBusinessId] = useState<string | null>(null);
   const [businessesLoading, setBusinessesLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [maxAds, setMaxAds] = useState<number>(50); // Default max ads
+  const [logs, setLogs] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string; timestamp: Date }>>([]); // Logs for UI display
 
   useEffect(() => {
     const initUser = async () => {
@@ -75,6 +77,11 @@ export default function SetupPage() {
   const removeRow = (id: string) => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== id) : rs));
   const updateRow = (id: string, url: string) => setRows(rs => rs.map(x => (x.id === id ? { ...x, url } : x)));
 
+  const addLog = (type: 'success' | 'error' | 'info', message: string) => {
+    const logEntry = { id: uid(), type, message, timestamp: new Date() };
+    setLogs(prev => [logEntry, ...prev].slice(0, 20)); // Keep last 20 logs
+  };
+
   const handlePasteBulk = async () => {
     try {
       const text = await navigator.clipboard.readText();
@@ -83,9 +90,11 @@ export default function SetupPage() {
       if (!candidates.length) return;
       const merged = Array.from(new Set([...nonEmptyUrls, ...candidates]));
       setRows(merged.map(u => ({ id: uid(), url: u })));
+      addLog('success', `✅ ${candidates.length} links pasted from clipboard`);
       setSuccessMsg('Links pasted from clipboard');
       setTimeout(() => setSuccessMsg(null), 3000);
     } catch {
+      addLog('error', '❌ Failed to read clipboard');
       setError('Failed to read clipboard');
       setTimeout(() => setError(null), 3000);
     }
@@ -96,17 +105,25 @@ export default function SetupPage() {
     if (!nonEmptyUrls.length) { setError('Add at least one link'); return; }
     if (!selectedBusinessId) { setError('Please select a business'); return; }
     setSending(true);
+    addLog('info', `� Preparing ${nonEmptyUrls.length} links...`);
+    addLog('info', `📤 Sending request to Apify (max ${maxAds} ads per link)...`);
+    
     try {
-      console.log('📤 Sending to Apify:', { businessId: selectedBusinessId, linksCount: nonEmptyUrls.length });
+      console.log('📤 Sending to Apify:', { businessId: selectedBusinessId, linksCount: nonEmptyUrls.length, maxAds });
       console.log('🔗 Links:', nonEmptyUrls);
+      
       const res = await fetch('/api/forward-webhook', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           links: nonEmptyUrls,
-          businessId: selectedBusinessId
+          businessId: selectedBusinessId,
+          maxAds
         })
       });
+      
+      addLog('info', '⏳ Apify is scraping ads... (downloading images, saving to DB)');
+      
       const ct = res.headers.get('content-type') || '';
       if (!res.ok) {
         const msg = ct.includes('application/json') ? (await res.json()).message : await res.text();
@@ -117,10 +134,117 @@ export default function SetupPage() {
       console.log('✅ Apify Results:', data);
       console.log('📊 Complete Response:', JSON.stringify(data, null, 2));
       
-      setSuccessMsg('Data saved to database! Check console for details.');
+      // Log detailed results
+      addLog('success', `✅ Scraping complete!`);
+      addLog('info', `💾 Saved ${data.saved || 0} ads, ${data.errors || 0} errors`);
+      
+      // Show error details if any
+      if (data.errorDetails && data.errorDetails.length > 0) {
+        const imageErrors = data.errorDetails.filter((e: any) => e.reason?.includes('image'));
+        const dbErrors = data.errorDetails.filter((e: any) => e.reason === 'db_save_failed');
+        
+        if (imageErrors.length > 0) {
+          addLog('error', `❌ Image errors: ${imageErrors.length} ads (${imageErrors.map((e: any) => e.reason).join(', ')})`);
+        }
+        if (dbErrors.length > 0) {
+          addLog('error', `❌ DB errors: ${dbErrors.length} ads`);
+        }
+      }
+      
+      setSuccessMsg('Data saved to database!');
+      setRows([{ id: uid(), url: '' }]);
     } catch (e: any) {
       console.error('❌ Error:', e?.message);
+      addLog('error', `❌ Error: ${e?.message}`);
       setError(e?.message || 'Unknown error');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleJsonUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    setError(null);
+    setSuccessMsg(null);
+
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!selectedBusinessId) {
+      setError('Please select a business first');
+      return;
+    }
+
+    setSending(true);
+    addLog('info', '📂 Reading JSON file...');
+    
+    try {
+      const fileContent = await file.text();
+      addLog('info', '📝 Parsing JSON data...');
+      const jsonData = JSON.parse(fileContent);
+
+      // Validate JSON structure
+      if (!Array.isArray(jsonData)) {
+        throw new Error('JSON must be an array of ad objects from Apify');
+      }
+
+      if (jsonData.length === 0) {
+        throw new Error('JSON array is empty');
+      }
+
+      addLog('success', `✅ Found ${jsonData.length} ads in JSON`);
+      addLog('info', '📤 Uploading to server...');
+
+      console.log('📤 Uploading JSON data:', { businessId: selectedBusinessId, itemsCount: jsonData.length });
+      console.log('📋 First item:', JSON.stringify(jsonData[0], null, 2));
+
+      const res = await fetch('/api/import-json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: jsonData,
+          businessId: selectedBusinessId,
+          maxAds
+        })
+      });
+
+      addLog('info', '⏳ Processing ads (downloading images, saving to DB)...');
+
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok) {
+        const msg = ct.includes('application/json') ? (await res.json()).message : await res.text();
+        throw new Error(msg || 'Import failed');
+      }
+
+      const data = ct.includes('application/json') ? await res.json() : await res.text();
+      
+      console.log('✅ Import Results:', data);
+      
+      // Log detailed results
+      addLog('success', `✅ Import complete!`);
+      addLog('info', `💾 Saved ${data.saved || 0} ads, ${data.errors || 0} errors`);
+      
+      // Show error details if any
+      if (data.errorDetails && data.errorDetails.length > 0) {
+        const imageErrors = data.errorDetails.filter((e: any) => e.reason?.includes('image'));
+        const dbErrors = data.errorDetails.filter((e: any) => e.reason === 'db_save_failed');
+        
+        if (imageErrors.length > 0) {
+          addLog('error', `❌ Image errors: ${imageErrors.length} ads (${imageErrors.map((e: any) => e.reason).join(', ')})`);
+        }
+        if (dbErrors.length > 0) {
+          addLog('error', `❌ DB errors: ${dbErrors.length} ads`);
+        }
+      }
+      
+      setSuccessMsg(`Successfully imported ${data.saved || 0} ads!`);
+
+      // Reset file input
+      event.target.value = '';
+    } catch (e: any) {
+      console.error('❌ JSON Upload Error:', e?.message);
+      addLog('error', `❌ Import failed: ${e?.message}`);
+      setError(e?.message || 'Failed to import JSON');
+      event.target.value = '';
     } finally {
       setSending(false);
     }
@@ -158,7 +282,7 @@ export default function SetupPage() {
           </div>
         ) : businesses.length === 0 ? (
           <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded text-amber-700 text-sm">
-            ⚠️ You don't own any businesses. Contact an administrator to set up access.
+            ⚠️ You don&apos;t own any businesses. Contact an administrator to set up access.
           </div>
         ) : (
           <div className="mb-6">
@@ -174,7 +298,7 @@ export default function SetupPage() {
               <select
                 value={selectedBusinessId || ''}
                 onChange={(e) => setSelectedBusinessId(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded text-sm focus:border-slate-400 focus:ring-1 focus:ring-slate-400 outline-none"
+                className="w-full px-3 py-2 border border-slate-300 rounded text-sm text-black focus:border-slate-400 focus:ring-1 focus:ring-slate-400 outline-none"
               >
                 <option value="">Choose a business...</option>
                 {businesses.map((biz) => (
@@ -208,7 +332,7 @@ export default function SetupPage() {
         )}
 
         {/* Action Buttons */}
-        <div className="flex gap-3 mb-6">
+        <div className="flex gap-3 mb-6 flex-wrap items-center">
           <button
             onClick={addRow}
             disabled={sending}
@@ -223,9 +347,73 @@ export default function SetupPage() {
           >
             Paste from Clipboard
           </button>
+
+          {/* JSON Upload */}
+          <label className="px-4 py-2 border border-slate-300 text-slate-700 rounded hover:bg-slate-50 disabled:opacity-50 transition-colors text-sm font-medium cursor-pointer">
+            📁 Upload JSON
+            <input
+              type="file"
+              accept=".json"
+              onChange={handleJsonUpload}
+              disabled={sending}
+              className="hidden"
+            />
+          </label>
+
+          {/* Max Ads Input */}
+          <div className="flex items-center gap-2 ml-auto">
+            <label className="text-sm font-medium text-slate-700">Max ads:</label>
+            <input
+              type="number"
+              min="1"
+              value={maxAds}
+              onChange={(e) => setMaxAds(parseInt(e.target.value, 10) || 50)}
+              className="w-20 px-3 py-2 border border-slate-300 rounded text-sm text-black focus:border-slate-400 focus:ring-1 focus:ring-slate-400 outline-none"
+            />
+          </div>
         </div>
 
-        {/* Links Table */}
+        {/* Logs Section - Always visible when loading or has logs */}
+        {(logs.length > 0 || sending) && (
+          <div className="mb-6 border border-slate-200 rounded-lg overflow-hidden bg-slate-50">
+            <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-medium text-slate-900">Activity Log</h3>
+                {sending && (
+                  <div className="flex items-center gap-1.5">
+                    <div className="animate-spin h-3 w-3 border-2 border-slate-600 border-t-transparent rounded-full"></div>
+                    <span className="text-xs text-slate-600">Processing...</span>
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => setLogs([])}
+                disabled={sending}
+                className="text-xs text-slate-600 hover:text-slate-900 disabled:opacity-50"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="divide-y divide-slate-200 max-h-48 overflow-y-auto">
+              {logs.length === 0 && sending ? (
+                <div className="px-4 py-3 text-sm text-slate-500 text-center">
+                  Starting...
+                </div>
+              ) : (
+                logs.map((log) => (
+                  <div key={log.id} className="px-4 py-2 text-xs text-slate-700 hover:bg-slate-100 transition-colors">
+                    <div className="flex items-start justify-between">
+                      <span className="flex-1">{log.message}</span>
+                      <span className="text-slate-500 ml-2 whitespace-nowrap">
+                        {log.timestamp.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
         <div className="border border-slate-200 rounded-lg overflow-hidden mb-6">
           <table className="w-full">
             <thead className="bg-slate-50 border-b border-slate-200">
@@ -245,7 +433,7 @@ export default function SetupPage() {
                       value={row.url}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateRow(row.id, e.target.value)}
                       placeholder="https://www.facebook.com/ads/library/?id=..."
-                      className={`w-full px-3 py-2 border rounded text-sm transition-colors text-slate-900 ${
+                      className={`w-full px-3 py-2 border rounded text-sm transition-colors text-black ${
                         row.url && !isLikelyMetaAds(row.url)
                           ? 'border-red-300 focus:border-red-400 focus:ring-1 focus:ring-red-400'
                           : 'border-slate-300 focus:border-slate-400 focus:ring-1 focus:ring-slate-400'

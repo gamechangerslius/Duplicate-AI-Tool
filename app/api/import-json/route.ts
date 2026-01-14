@@ -4,7 +4,7 @@ import { isUserAdmin } from "@/utils/supabase/admin";
 
 export const runtime = "nodejs";
 
-// Create admin client for storage operations (bypasses any restrictions)
+// Create admin client for storage operations
 function createAdminClient(reqId: string) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -49,77 +49,25 @@ function safeJsonStringify(v: any) {
   }
 }
 
-function normalizeAndValidateUrls(rawLinks: any[]): { urls: string[]; rejected: any[] } {
-  const rejected: any[] = [];
-  const urls: string[] = [];
-
-  for (const item of rawLinks) {
-    // Accept either "string" or "{ url: string }"
-    const candidate = item?.url ?? item;
-    let s = String(candidate ?? "");
-
-    // IMPORTANT: remove ALL whitespace inside the URL (fixes \n breaks from UI copy)
-    s = s.trim().replace(/\s+/g, "");
-
-    if (!s) {
-      rejected.push({ reason: "empty", item });
-      continue;
-    }
-
-    try {
-      const u = new URL(s);
-      if (u.protocol !== "http:" && u.protocol !== "https:") {
-        rejected.push({ reason: "bad-protocol", item, normalized: s });
-        continue;
-      }
-      urls.push(u.toString());
-    } catch {
-      rejected.push({ reason: "invalid-url", item, normalized: s });
-    }
-  }
-
-  // unique
-  const unique = Array.from(new Set(urls));
-  return { urls: unique, rejected };
-}
-
 export async function POST(req: Request) {
   const reqId = `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
   try {
     // ---- Read body ----
     const body = await req.json().catch(() => ({}));
-    const { links, businessId, maxAds } = body ?? {};
+    const { items, businessId, maxAds } = body ?? {};
 
-    console.log(`\n[${reqId}] ===== /api/forward-webhook POST =====`);
-    console.log(`[${reqId}] body keys:`, body ? Object.keys(body) : null);
+    console.log(`\n[${reqId}] ===== /api/import-json POST =====`);
     console.log(`[${reqId}] businessId:`, businessId);
-    console.log(`[${reqId}] maxAds:`, maxAds || 50);
-    console.log(
-      `[${reqId}] links type:`,
-      typeof links,
-      "isArray:",
-      Array.isArray(links),
-      "length:",
-      Array.isArray(links) ? links.length : null
-    );
-    console.log(`[${reqId}] links[0] raw:`, safeJsonStringify(Array.isArray(links) ? links[0] : undefined));
+    console.log(`[${reqId}] items count:`, Array.isArray(items) ? items.length : "not-array");
+    console.log(`[${reqId}] maxAds limit:`, maxAds || 50);
 
-    if (!Array.isArray(links) || links.length === 0) {
-      console.log(`[${reqId}] ❌ Validation failed: links is not a non-empty array`);
-      return NextResponse.json({ message: "Field 'links' must be a non-empty array" }, { status: 400 });
-    }
-
-    // ---- Apify config ----
-    const apifyToken = process.env.APIFY_TOKEN;
-    const apifyActorId = process.env.APIFY_ACTOR_ID;
-
-    console.log(`[${reqId}] APIFY_ACTOR_ID exists:`, Boolean(apifyActorId));
-    console.log(`[${reqId}] APIFY_TOKEN exists:`, Boolean(apifyToken));
-
-    if (!apifyToken || !apifyActorId) {
-      console.log(`[${reqId}] ❌ Missing Apify config`);
-      return NextResponse.json({ message: "Missing Apify configuration" }, { status: 500 });
+    if (!Array.isArray(items) || items.length === 0) {
+      console.log(`[${reqId}] ❌ Validation failed: items is not a non-empty array`);
+      return NextResponse.json(
+        { message: "Field 'items' must be a non-empty array" },
+        { status: 400 }
+      );
     }
 
     // ---- Auth + business ownership ----
@@ -141,11 +89,9 @@ export async function POST(req: Request) {
     let hasAccess = false;
 
     if (userIsAdmin) {
-      // Admin has access to all businesses
       hasAccess = true;
       console.log(`[${reqId}] ✅ User is admin - has access to all businesses`);
     } else {
-      // Regular user must own the business
       const { data: biz, error: bizErr } = await supabase
         .from("businesses")
         .select("id")
@@ -163,83 +109,11 @@ export async function POST(req: Request) {
     }
 
     if (!hasAccess) {
-      console.log(`[${reqId}] ❌ Forbidden: user does not own or have admin access to this business`);
-      return NextResponse.json({ message: "You don't have access to this business" }, { status: 403 });
-    }
-
-    // ---- Normalize URLs (MOST IMPORTANT) ----
-    const { urls, rejected } = normalizeAndValidateUrls(links);
-
-    console.log(`[${reqId}] normalized urls count:`, urls.length);
-    console.log(`[${reqId}] normalized urls sample:`, urls.slice(0, 3).map((u) => safeJsonStringify(u)));
-    console.log(`[${reqId}] rejected count:`, rejected.length);
-    if (rejected.length) console.log(`[${reqId}] rejected sample:`, rejected.slice(0, 3));
-
-    if (urls.length === 0) {
-      console.log(`[${reqId}] ❌ No valid URLs after normalization`);
+      console.log(`[${reqId}] ❌ Forbidden: user does not have access to this business`);
       return NextResponse.json(
-        {
-          message: "No valid URLs after normalization",
-          debug: { rejectedSample: rejected.slice(0, 5), linksSample: links.slice(0, 5) },
-        },
-        { status: 400 }
+        { message: "You don't have access to this business" },
+        { status: 403 }
       );
-    }
-
-    // ---- Build Apify sync URL (encode Actor ID and token) ----
-    const apifySyncUrl =
-      `https://api.apify.com/v2/acts/${encodeURIComponent(apifyActorId)}` +
-      `/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}&timeout=55`;
-
-    // IMPORTANT: this actor requires input.urls
-    const runInput = {
-      urls: urls.map((u) => ({ url: u })), // 👈 важно
-      includeAdsData: true,
-      maxAds: Math.min(Math.max(maxAds || 50, 1), 100), // Clamp between 1-100
-    };
-
-
-    console.log(`[${reqId}] 🚀 Apify URL:`, apifySyncUrl.replace(apifyToken, "****"));
-    console.log(`[${reqId}] 📝 Apify input keys:`, Object.keys(runInput));
-    console.log(`[${reqId}] 📝 Apify input.urls length:`, runInput.urls.length);
-    console.log(`[${reqId}] 📝 Apify input.urls[0]:`, safeJsonStringify(runInput.urls[0]));
-
-    // ---- Call Apify ----
-    const response = await fetch(apifySyncUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(runInput),
-    });
-
-    console.log(`[${reqId}] Apify response status:`, response.status);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log(`[${reqId}] ❌ Apify error body:`, errorText);
-      return NextResponse.json(
-        {
-          message: "Apify error",
-          status: response.status,
-          apify: errorText,
-          debug: { sentUrlsSample: urls.slice(0, 3), rejectedSample: rejected.slice(0, 3) },
-        },
-        { status: response.status }
-      );
-    }
-
-    const resultsData = await response.json().catch(async () => {
-      const t = await response.text();
-      console.log(`[${reqId}] ⚠️ Apify returned non-JSON, body:`, t);
-      throw new Error("Apify returned non-JSON response");
-    });
-
-    console.log(`[${reqId}] ✅ Apify items received:`, Array.isArray(resultsData) ? resultsData.length : "not-array");
-    console.log(`[${reqId}] 📊 First item sample:`, safeJsonStringify(Array.isArray(resultsData) && resultsData[0] ? resultsData[0] : null));
-
-    // ---- Parse Apify results and save to database ----
-    if (!Array.isArray(resultsData) || resultsData.length === 0) {
-      console.log(`[${reqId}] ℹ️ No results from Apify`);
-      return NextResponse.json({ message: "No data from Apify", items: 0 });
     }
 
     // Get business slug for saving creatives
@@ -252,7 +126,7 @@ export async function POST(req: Request) {
     if (bizDataErr || !bizData?.slug) {
       console.log(`[${reqId}] ❌ Failed to get business slug:`, bizDataErr?.message);
       return NextResponse.json(
-        { message: "Failed to get business slug", items: 0 },
+        { message: "Failed to get business slug", saved: 0 },
         { status: 500 }
       );
     }
@@ -260,21 +134,30 @@ export async function POST(req: Request) {
     const businessSlug = bizData.slug;
     console.log(`[${reqId}] 📁 Business slug:`, businessSlug);
 
+    // Limit items to maxAds
+    const maxAdsLimit = Math.min(Math.max(maxAds || 50, 1), items.length);
+    const itemsToProcess = items.slice(0, maxAdsLimit);
+    console.log(`[${reqId}] Processing ${itemsToProcess.length} items (limit: ${maxAdsLimit})`);
+
     // Process and save each ad
     const savedAds: any[] = [];
     const errors: any[] = [];
-    const totalItems = resultsData.length;
+    const totalItems = itemsToProcess.length;
 
-    for (let i = 0; i < resultsData.length; i++) {
-      const item = resultsData[i];
+    for (let i = 0; i < itemsToProcess.length; i++) {
+      const item = itemsToProcess[i];
       try {
         console.log(`[${reqId}] 📊 Progress: ${i + 1}/${totalItems} (${Math.round(((i + 1) / totalItems) * 100)}%)`);
         
-        // Extract data from Apify response structure
-        const adArchiveId = item.ad_archive_id;
-        const snapshot = item.snapshot || {};
+        // Extract data from JSON structure (same as Apify response)
+        const adArchiveId = item.ad_archive_id || item.adArchiveId;
+        const snapshot = item.snapshot || item;
 
-        console.log(`[${reqId}] 🔍 Processing item:`, { adArchiveId, hasSnapshot: Boolean(snapshot), hasVideos: Boolean(snapshot.videos?.length) });
+        console.log(`[${reqId}] 🔍 Processing item:`, {
+          adArchiveId,
+          hasSnapshot: Boolean(snapshot),
+          hasVideos: Boolean(snapshot.videos?.length),
+        });
 
         if (!adArchiveId) {
           errors.push({ reason: "missing_ad_archive_id" });
@@ -439,11 +322,15 @@ export async function POST(req: Request) {
           ad_archive_id: adArchiveId,
           page_name: snapshot.page_name || "",
           title: snapshot.title || null,
-          text: snapshot.body?.text || null,
+          text: snapshot.body?.text || snapshot.text || null,
           caption: snapshot.caption || null,
-          url: snapshot.link_url || null,
+          url: snapshot.link_url || snapshot.url || null,
           competitor_niche: null,
-          display_format: snapshot.display_format?.toUpperCase?.() === "VIDEO" ? "VIDEO" : "IMAGE",
+          display_format:
+            snapshot.display_format?.toUpperCase?.() === "VIDEO" ||
+            snapshot.videos?.length > 0
+              ? "VIDEO"
+              : "IMAGE",
           start_date_formatted: item.start_date_formatted || null,
           end_date_formatted: item.end_date_formatted || null,
           cards_json: snapshot.cards ? JSON.stringify(snapshot.cards) : null,
@@ -454,18 +341,15 @@ export async function POST(req: Request) {
 
         // Upsert the ad
         let insertErr = null;
-        if (checkErr && checkErr.code !== 'PGRST116') {
-          // Real error, not "no rows" error
+        if (checkErr && checkErr.code !== "PGRST116") {
           insertErr = checkErr;
         } else if (existing) {
-          // Update existing
           const { error: updateErr } = await supabase
             .from("ads")
             .update(adData)
             .eq("ad_archive_id", adArchiveId);
           insertErr = updateErr;
         } else {
-          // Insert new
           const { error: insertError } = await supabase
             .from("ads")
             .insert([adData]);
@@ -478,24 +362,28 @@ export async function POST(req: Request) {
           continue;
         }
 
-        console.log(`[${reqId}] ✅ Saved ad: ${adArchiveId}`);
-        savedAds.push({ ad_archive_id: adArchiveId });
-      } catch (parseErr: any) {
-        console.log(`[${reqId}] ❌ Error processing item:`, parseErr?.message);
-        errors.push({ reason: "parse_error", error: parseErr?.message });
+        console.log(`[${reqId}] ✅ Saved ad:`, adArchiveId);
+        savedAds.push(adArchiveId);
+      } catch (err: any) {
+        console.log(`[${reqId}] ❌ Exception processing item:`, err?.message);
+        errors.push({ reason: err?.message || "unknown error" });
       }
     }
 
-    console.log(`[${reqId}] 📈 Summary: saved=${savedAds.length}, errors=${errors.length}`);
+    console.log(`[${reqId}] 📊 Summary: ${savedAds.length} saved, ${errors.length} errors`);
+    console.log(`[${reqId}] ✅ Import complete`);
 
     return NextResponse.json({
-      message: "Processing complete",
+      message: `Imported ${savedAds.length} ads from JSON`,
       saved: savedAds.length,
       errors: errors.length,
       errorDetails: errors.slice(0, 10),
     });
-  } catch (e: any) {
-    console.log(`[${reqId}] 💥 Exception:`, e?.message);
-    return NextResponse.json({ message: e?.message || "Internal Error", reqId }, { status: 500 });
+  } catch (err: any) {
+    console.log(`[req] 💥 Exception:`, err?.message);
+    return NextResponse.json(
+      { message: err?.message || "Internal server error", saved: 0 },
+      { status: 500 }
+    );
   }
 }
