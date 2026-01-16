@@ -316,6 +316,7 @@ export async function POST(req: Request) {
         // ---- First, try to download and upload image ----
         let imageUrl = null;
         let imageUploadSuccess = false;
+        let storagePath: string | null = null;
 
         // Priority 1: videos array - extract preview image
         if (snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0) {
@@ -378,13 +379,26 @@ export async function POST(req: Request) {
                 console.log(`[${reqId}] ❌ Buffer is empty!`);
               }
               
-              // Determine format
-              const urlExt = new URL(imageUrl).pathname.split(".").pop()?.toLowerCase() || "jpg";
-              const ext = ["jpg", "jpeg", "png", "webp", "gif"].includes(urlExt) ? urlExt : "jpg";
-              
-              const storagePath = `${businessSlug}/${adArchiveId}.${ext}`;
+              // Determine format — prefer Content-Type header, fall back to URL extension
+              const contentTypeHeader = (imgResponse.headers.get('content-type') || '').toLowerCase();
+              let ext = 'jpg';
+              let uploadContentType = '';
+
+              if (contentTypeHeader.startsWith('image/')) {
+                const subtype = contentTypeHeader.split(';')[0].split('/')[1];
+                ext = subtype === 'jpeg' ? 'jpg' : subtype;
+                if (!["jpg", "png", "webp", "gif"].includes(ext)) ext = 'jpg';
+                uploadContentType = contentTypeHeader.split(';')[0];
+              } else {
+                const urlExt = new URL(imageUrl).pathname.split('.').pop()?.toLowerCase() || 'jpg';
+                ext = urlExt === 'jpeg' ? 'jpg' : urlExt;
+                if (!["jpg", "png", "webp", "gif"].includes(ext)) ext = 'jpg';
+                uploadContentType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+              }
+
+              storagePath = `${businessSlug}/${adArchiveId}.${ext}`;
               console.log(`[${reqId}] 📤 Uploading to:`, storagePath);
-              console.log(`[${reqId}] 📝 Content-type:`, `image/${ext}`);
+              console.log(`[${reqId}] 📝 Content-type:`, uploadContentType);
               
               // Use admin client for storage (will throw error if not available)
               const adminClient = createAdminClient(reqId);
@@ -393,7 +407,7 @@ export async function POST(req: Request) {
                 console.log(`[${reqId}] 🚀 Starting upload to creatives bucket...`);
                 const { data: uploadData, error: uploadErr } = await adminClient.storage
                   .from("creatives")
-                  .upload(storagePath, new Uint8Array(buffer), { upsert: true, contentType: `image/${ext}` });
+                  .upload(storagePath, new Uint8Array(buffer), { upsert: true, contentType: uploadContentType });
 
                 if (uploadErr) {
                   console.log(`[${reqId}] ❌ Upload failed - Code:`, uploadErr.code);
@@ -447,6 +461,7 @@ export async function POST(req: Request) {
           start_date_formatted: item.start_date_formatted || null,
           end_date_formatted: item.end_date_formatted || null,
           cards_json: snapshot.cards ? JSON.stringify(snapshot.cards) : null,
+          storage_path: storagePath,
           created_at: new Date().toISOString(),
           vector_group: null,
           duplicates_count: 0,

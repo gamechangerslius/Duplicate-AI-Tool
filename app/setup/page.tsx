@@ -163,6 +163,13 @@ export default function SetupPage() {
   };
 
   const handleJsonUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    // Only admins can upload JSON
+    if (!isAdmin) {
+      setError('Only administrators can upload JSON files. Your request will be reviewed by an admin.');
+      event.target.value = '';
+      return;
+    }
+
     setError(null);
     setSuccessMsg(null);
 
@@ -275,6 +282,19 @@ export default function SetupPage() {
           <p className="text-slate-600">Paste Facebook/Meta Ads Library links to extract ad data via Apify.</p>
         </div>
 
+        {/* Info for non-admin users */}
+        {!isAdmin && (
+          <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex gap-3">
+              <span className="text-xl">ℹ️</span>
+              <div>
+                <p className="text-sm font-medium text-blue-900 mb-1">JSON Import Requires Admin Approval</p>
+                <p className="text-sm text-blue-800">To import data directly from JSON files, you&#39;ll need to contact an administrator. Admins have exclusive access to JSON uploads for data quality and security.</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Business Selection */}
         {businessesLoading ? (
           <div className="mb-6 p-3 bg-slate-50 border border-slate-200 rounded text-slate-600 text-sm">
@@ -282,7 +302,7 @@ export default function SetupPage() {
           </div>
         ) : businesses.length === 0 ? (
           <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded text-amber-700 text-sm">
-            ⚠️ You don&apos;t own any businesses. Contact an administrator to set up access.
+            ⚠️ You don&#39;t own any businesses. Contact an administrator to set up access.
           </div>
         ) : (
           <div className="mb-6">
@@ -348,17 +368,23 @@ export default function SetupPage() {
             Paste from Clipboard
           </button>
 
-          {/* JSON Upload */}
-          <label className="px-4 py-2 border border-slate-300 text-slate-700 rounded hover:bg-slate-50 disabled:opacity-50 transition-colors text-sm font-medium cursor-pointer">
-            📁 Upload JSON
-            <input
-              type="file"
-              accept=".json"
-              onChange={handleJsonUpload}
-              disabled={sending}
-              className="hidden"
-            />
-          </label>
+          {/* JSON Upload - Admin only */}
+          {isAdmin ? (
+            <label className="px-4 py-2 border border-slate-300 text-slate-700 rounded hover:bg-slate-50 disabled:opacity-50 transition-colors text-sm font-medium cursor-pointer">
+              📁 Upload JSON
+              <input
+                type="file"
+                accept=".json"
+                onChange={handleJsonUpload}
+                disabled={sending}
+                className="hidden"
+              />
+            </label>
+          ) : (
+            <div className="px-4 py-2 border border-amber-300 bg-amber-50 text-amber-700 rounded text-sm font-medium">
+              📁 JSON Upload (admin only)
+            </div>
+          )}
 
           {/* Max Ads Input */}
           <div className="flex items-center gap-2 ml-auto">

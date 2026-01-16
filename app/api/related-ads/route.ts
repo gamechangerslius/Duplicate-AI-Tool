@@ -2,9 +2,10 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { getImageUrl, getBusinessSlug, getGroupDateRange, getEffectiveTitle } from '@/utils/supabase/db';
+import { getCreativeUrl, getBusinessSlug, getGroupDateRange, getEffectiveTitle } from '@/utils/supabase/db';
 
 const ADS_TABLE = 'ads';
+const ADS_GROUPS_TABLE = 'ads_groups_test';
 
 export async function GET(request: Request) {
   try {
@@ -31,19 +32,41 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Business not found' }, { status: 404 });
     }
 
-    let q = supabase
-      .from(ADS_TABLE)
-      .select('ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, competitor_niche, start_date_formatted, end_date_formatted, duplicates_count, cards_json')
+    // Get a single representative from ads_groups_test to avoid duplicates
+    const { data: groupRow } = await supabase
+      .from(ADS_GROUPS_TABLE)
+      .select('rep_ad_archive_id, items')
       .eq('vector_group', vector_group)
       .eq('business_id', businessId)
-      .order('ad_archive_id', { ascending: true })
-      .limit(limit);
+      .maybeSingle();
 
-    if (currentId) {
-      q = q.neq('ad_archive_id', currentId);
-    }
-    if (lastId) {
-      q = q.gt('ad_archive_id', lastId);
+    const representativeId = groupRow?.rep_ad_archive_id;
+
+    // Determine which ad to return (representative when it differs from current)
+    let q;
+    if (representativeId && representativeId !== currentId) {
+      q = supabase
+        .from(ADS_TABLE)
+        .select('ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, competitor_niche, start_date_formatted, end_date_formatted, duplicates_count, cards_json')
+        .eq('ad_archive_id', representativeId)
+        .eq('business_id', businessId)
+        .limit(1);
+    } else {
+      // Fallback: pick the first ad in the group (excluding current) if representative missing/identical
+      q = supabase
+        .from(ADS_TABLE)
+        .select('ad_archive_id, title, page_name, text, caption, display_format, vector_group, url, competitor_niche, start_date_formatted, end_date_formatted, duplicates_count, cards_json')
+        .eq('vector_group', vector_group)
+        .eq('business_id', businessId)
+        .order('ad_archive_id', { ascending: true })
+        .limit(1);
+
+      if (currentId) {
+        q = q.neq('ad_archive_id', currentId);
+      }
+      if (lastId) {
+        q = q.gt('ad_archive_id', lastId);
+      }
     }
 
     const { data, error } = await q;
@@ -54,7 +77,18 @@ export async function GET(request: Request) {
     // Get group dates once for all ads
     const groupDates = await getGroupDateRange(vector_group);
 
-    const items = (data || []).map((ad: any) => {
+    // Fetch group status analytics
+    const { data: statusRow } = await supabase
+      .from('ads_groups_with_status')
+      .select('status, diff_count')
+      .eq('vector_group', vector_group)
+      .eq('business_id', businessId)
+      .maybeSingle();
+
+    const groupStatus = statusRow?.status as 'New' | 'Scaling' | 'Inactive' | undefined;
+    const groupDiffCount = statusRow?.diff_count ?? null;
+
+    const items = await Promise.all((data || []).map(async (ad: any) => {
       const effectiveTitle = getEffectiveTitle(ad.title, ad.cards_json, { 
         caption: ad.caption, 
         text: ad.text 
@@ -74,16 +108,15 @@ export async function GET(request: Request) {
         vector_group: ad.vector_group,
         start_date_formatted: ad.start_date_formatted ?? groupDates.minStartDate ?? undefined,
         end_date_formatted: ad.end_date_formatted ?? groupDates.maxEndDate ?? undefined,
-        duplicates_count: ad.duplicates_count,
+        duplicates_count: groupRow?.items ?? ad.duplicates_count,
+        status: groupStatus,
+        diff_count: groupDiffCount,
         meta_ad_url: `https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}`,
-        image_url: getImageUrl(ad.ad_archive_id, businessSlug),
+        image_url: await getCreativeUrl(ad.ad_archive_id, businessSlug),
       };
-    });
+    }));
 
-    const nextCursor = items.length > 0 ? items[items.length - 1].ad_archive_id : null;
-    const hasMore = items.length === limit;
-
-    return NextResponse.json({ items, nextCursor, hasMore }, { status: 200 });
+    return NextResponse.json({ items, nextCursor: null, hasMore: false }, { status: 200 });
   } catch (err: any) {
     return NextResponse.json({ error: String(err?.message || err) }, { status: 500 });
   }

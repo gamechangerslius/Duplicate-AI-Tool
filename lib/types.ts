@@ -15,7 +15,11 @@ export interface Ad {
   start_date_formatted: string | null | undefined;
   end_date_formatted: string | null | undefined;
   vector_group: number | null;
+  group_created_at?: string | null;
+  new_count?: number;
   duplicates_count?: number;
+  status?: 'New' | 'Scaling' | 'Inactive';
+  diff_count?: number | null;
   meta_ad_url?: string;
   raw?: Record<string, any>;
 }

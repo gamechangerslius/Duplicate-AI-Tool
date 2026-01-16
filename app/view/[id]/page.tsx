@@ -66,7 +66,8 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
     hasGroup ? fetchGroupRepresentative(ad.vector_group as number, business.id) : Promise.resolve(null),
   ]);
 
-  const imageUrl = ad.image_url ?? getImageUrl(ad.ad_archive_id, business.slug);
+  const imageUrl = ad.image_url ?? await getImageUrl(ad.ad_archive_id, business.slug);
+  const representativeImageUrl = representative ? (representative.image_url ?? await getImageUrl(representative.ad_archive_id, business.slug)) : null;
   
   // Use real duplicates_count from database, fallback to calculated size
   const actualDuplicatesCount = ad.duplicates_count || (hasGroup ? relatedAds.length + 1 : 1);
@@ -136,13 +137,15 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
 
         <div className="bg-white rounded-2xl shadow-lg overflow-hidden mb-8">
           <div className="relative aspect-video bg-slate-100">
-            <Image
-              src={imageUrl}
-              alt={ad.title || ad.page_name}
-              fill
-              className="object-contain"
-              unoptimized
-            />
+            {imageUrl && (
+              <Image
+                src={imageUrl}
+                alt={ad.title || ad.page_name}
+                fill
+                className="object-contain"
+                unoptimized
+              />
+            )}
           </div>
           <div className="p-6">
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -195,7 +198,7 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
               <div className="flex items-center gap-4">
                 <div className="relative h-20 w-20 rounded-md overflow-hidden bg-slate-100">
                   <Image
-                    src={representative.image_url ?? getImageUrl(representative.ad_archive_id, business.slug)}
+                    src={representativeImageUrl || ''}
                     alt={representative.title || representative.page_name}
                     fill
                     className="object-cover"
@@ -272,9 +275,9 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
                     <div className="mt-4 bg-white rounded-xl p-4 shadow-sm">
                       <h3 className="text-slate-900 font-semibold mb-3">Additional Creatives ({cards.length})</h3>
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                        {cards.map((card: any, idx: number) => {
+                        {cards.map(async (card: any, idx: number) => {
                           const cardId = card.ad_archive_id || card.id;
-                          const imageUrl = cardId ? getImageUrl(cardId, business.slug) : null;
+                          const imageUrl = cardId ? await getImageUrl(cardId, business.slug) : null;
                           const linkUrl = card.link_url || imageUrl;
                           return linkUrl && imageUrl ? (
                             <a
@@ -319,14 +322,17 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
 
             {hasMultiplePages || hasMultipleUrls ? (
               <div className="space-y-6">
-                {Object.entries(relatedBySource).map(([key, payload]) => (
-                  <div key={key} className="bg-white rounded-xl p-4 shadow-sm border border-slate-200">
-                    <div className="text-slate-900 font-semibold mb-3">
-                      {payload.page || 'Unknown'} {payload.url ? `• ${payload.url}` : ''} ({payload.items.length})
+                {Object.entries(relatedBySource).map(([key, payload]) => {
+                  const p = payload as { page?: string; url?: string; items: any[] };
+                  return (
+                    <div key={key} className="bg-white rounded-xl p-4 shadow-sm border border-slate-200">
+                      <div className="text-slate-900 font-semibold mb-3">
+                        {p.page || 'Unknown'} {p.url ? `• ${p.url}` : ''} ({p.items.length})
+                      </div>
+                      <RelatedAdsGrid ads={p.items} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} businessId={business.id} businessSlug={business.slug} />
                     </div>
-                    <RelatedAdsGrid ads={payload.items} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} businessId={business.id} businessSlug={business.slug} />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <RelatedAdsGrid ads={relatedAds} groupSize={groupSize} vectorGroup={ad.vector_group as number} currentAdArchiveId={ad.ad_archive_id} businessId={business.id} businessSlug={business.slug} />
