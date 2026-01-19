@@ -186,6 +186,18 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
               </div>
             )}
 
+            {ad.ai_description && (
+              <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-100">
+                <div className="flex items-start gap-2">
+                  <span className="text-lg">🤖</span>
+                  <div className="flex-1">
+                    <div className="text-sm font-semibold text-blue-900 mb-1">AI Description</div>
+                    <p className="text-sm text-slate-700 leading-relaxed">{ad.ai_description}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Group Metadata Component */}
             <GroupMetadata vectorGroup={ad.vector_group} businessId={businessId} />
           </div>

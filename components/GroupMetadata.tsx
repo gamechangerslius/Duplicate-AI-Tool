@@ -65,20 +65,31 @@ export function GroupMetadata({ vectorGroup, businessId }: GroupMetadataProps) {
 
         <div className="bg-purple-50 p-3 rounded-lg border border-purple-200">
           <div className="text-xs font-semibold text-purple-700 mb-1">Content Type</div>
-          <div className="text-lg font-bold text-purple-900">
-            {metadata.content_types && metadata.content_types.length === 1
-              ? (metadata.content_types[0] === 'IMAGE' ? 'Image' : 'Video')
-              : (metadata.content_types && metadata.content_types.length > 1 ? 'Mixed' : 'Unknown')}
+          <div className="flex items-center gap-2">
+            <span className="text-xl">
+              {metadata.content_types && metadata.content_types.length === 1
+                ? (metadata.content_types[0] === 'IMAGE' ? '📷' : '🎬')
+                : (metadata.content_types && metadata.content_types.length > 1 ? '🎨' : '❓')}
+            </span>
+            <div className="text-lg font-bold text-purple-900">
+              {metadata.content_types && metadata.content_types.length === 1
+                ? (metadata.content_types[0] === 'IMAGE' ? 'Image' : 'Video')
+                : (metadata.content_types && metadata.content_types.length > 1 ? 'Mixed' : 'Unknown')}
+            </div>
           </div>
         </div>
 
         <div className="bg-green-50 p-3 rounded-lg border border-green-200">
-          <div className="text-xs font-semibold text-green-700 mb-1">First Seen</div>
+          <div className="text-xs font-semibold text-green-700 mb-1 flex items-center gap-1">
+            📅 First Seen
+          </div>
           <div className="text-xs font-mono text-green-900">{metadata.first_seen || 'N/A'}</div>
         </div>
 
         <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">
-          <div className="text-xs font-semibold text-orange-700 mb-1">Last Seen</div>
+          <div className="text-xs font-semibold text-orange-700 mb-1 flex items-center gap-1">
+            📅 Last Seen
+          </div>
           <div className="text-xs font-mono text-orange-900">{metadata.last_seen || 'N/A'}</div>
         </div>
 

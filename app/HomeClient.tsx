@@ -91,6 +91,7 @@ function HomeClientContent({
   const [selectedNiche, setSelectedNiche] = useState<string>('');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
+  const [aiDescriptionSearch, setAiDescriptionSearch] = useState<string>('');
 
   // ===== Duplicates slider model =====
   const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({
@@ -123,6 +124,7 @@ function HomeClientContent({
       endDate?: string;
       duplicatesApplied?: [number, number] | null;
       pageNumber?: number;
+      aiDescription?: string;
     }) => {
       const params = new URLSearchParams();
 
@@ -132,6 +134,7 @@ function HomeClientContent({
       if (next.format && next.format !== 'ALL') params.set('format', next.format);
       if (next.startDate) params.set('startDate', next.startDate);
       if (next.endDate) params.set('endDate', next.endDate);
+      if (next.aiDescription && next.aiDescription.trim()) params.set('aiDescription', next.aiDescription);
 
       if (next.duplicatesApplied) {
         params.set('duplicates', `${next.duplicatesApplied[0]}-${next.duplicatesApplied[1]}`);
@@ -231,6 +234,7 @@ function HomeClientContent({
             startDate: startDate || undefined,
             endDate: endDate || undefined,
             displayFormat: displayFormat === 'ALL' ? undefined : displayFormat,
+            aiDescription: aiDescriptionSearch || undefined,
           },
           { page: pageToLoad, perPage: PER_PAGE }
         );
@@ -244,7 +248,7 @@ function HomeClientContent({
         setLoading(false);
       }
     },
-    [businessId, selectedPage, selectedNiche, startDate, endDate, displayFormat, buildDuplicatesFilter]
+    [businessId, selectedPage, selectedNiche, startDate, endDate, displayFormat, buildDuplicatesFilter, aiDescriptionSearch]
   );
 
   // ===== 1) Init business + filters from URL (run once) =====
@@ -337,6 +341,7 @@ function HomeClientContent({
       const fmt = (searchParams.get('format') as DisplayFormat) || 'ALL';
       const start = searchParams.get('startDate') || '';
       const end = searchParams.get('endDate') || '';
+      const aiDesc = searchParams.get('aiDescription') || '';
       const pageFromUrl = Number(searchParams.get('p') || '1');
 
       setSelectedPage(pageName);
@@ -344,6 +349,7 @@ function HomeClientContent({
       setDisplayFormat(fmt === 'IMAGE' || fmt === 'VIDEO' ? fmt : 'ALL');
       setStartDate(start);
       setEndDate(end);
+      setAiDescriptionSearch(aiDesc);
 
       if (Number.isFinite(pageFromUrl) && pageFromUrl > 1) {
         setCurrentPage(Math.floor(pageFromUrl));
@@ -390,6 +396,7 @@ function HomeClientContent({
       selectedNiche,
       startDate,
       endDate,
+      aiDescriptionSearch,
       dupsEverApplied ? `${duplicatesRangeApplied[0]}-${duplicatesRangeApplied[1]}` : '',
     ].join('|');
 
@@ -405,6 +412,7 @@ function HomeClientContent({
     selectedNiche,
     startDate,
     endDate,
+    aiDescriptionSearch,
     dupsEverApplied,
     duplicatesRangeApplied,
   ]);
@@ -426,6 +434,7 @@ function HomeClientContent({
         format: displayFormat,
         startDate,
         endDate,
+        aiDescription: aiDescriptionSearch,
         duplicatesApplied: dupsEverApplied ? duplicatesRangeApplied : null,
         pageNumber: currentPage,
       });
@@ -442,6 +451,7 @@ function HomeClientContent({
     selectedNiche,
     startDate,
     endDate,
+    aiDescriptionSearch,
     displayFormat,
     dupsEverApplied,
     duplicatesRangeApplied,
@@ -455,7 +465,7 @@ function HomeClientContent({
     if (!businessId) return;
 
     loadDuplicatesStats();
-  }, [isInitialized, businessId, selectedPage, selectedNiche, startDate, endDate, displayFormat, loadDuplicatesStats]);
+  }, [isInitialized, businessId, selectedPage, selectedNiche, startDate, endDate, aiDescriptionSearch, displayFormat, loadDuplicatesStats]);
 
   // ===== 6) Debounced auto-apply duplicates draft -> applied =====
   useEffect(() => {
@@ -700,6 +710,7 @@ function HomeClientContent({
               selectedNiche ||
               startDate ||
               endDate ||
+              aiDescriptionSearch ||
               (duplicatesStats.max > duplicatesStats.min && dupsEverApplied) ||
               displayFormat !== 'ALL') && (
               <>
@@ -714,6 +725,12 @@ function HomeClientContent({
                 {selectedNiche && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-purple-100 text-purple-700 text-xs">
                     🎯 {selectedNiche === 'passion' ? 'Romantic novels' : selectedNiche}
+                  </span>
+                )}
+
+                {aiDescriptionSearch && (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-pink-100 text-pink-700 text-xs">
+                    🔍 AI: {aiDescriptionSearch}
                   </span>
                 )}
 
@@ -777,6 +794,17 @@ function HomeClientContent({
               <option value="drama">Drama</option>
               <option value="passion">Romantic novels</option>
             </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Пошук за AI описом / AI Description Search</label>
+            <input
+              type="text"
+              value={aiDescriptionSearch}
+              onChange={(e) => setAiDescriptionSearch(e.target.value)}
+              placeholder="Введіть текст для пошуку / Search by AI description..."
+              className="px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
           </div>
 
           <div>

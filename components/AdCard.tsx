@@ -30,20 +30,23 @@ export function AdCard({ ad }: AdCardProps) {
           </div>
         )}
         {isVideo && (
-          <div className="absolute -top-2 -right-2 z-10 flex items-center gap-1 bg-blue-600 text-white text-[10px] px-2 py-0.5 rounded-full shadow-sm">
-            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-              <path d="M5 3v18l15-9L5 3z" fill="currentColor" />
-            </svg>
-            <span className="font-semibold tracking-tight">Video</span>
+          <div className="absolute top-2 right-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white text-xs px-2 py-1 rounded-full font-medium shadow-md z-20 flex items-center">
+            Video
+          </div>
+        )}
+        {ad.ai_description && (
+          <div className="absolute top-2 right-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white text-xs px-2 py-1 rounded-full font-medium shadow-md z-20 flex items-center gap-1">
+            <span>🤖</span>
+            <span>AI</span>
           </div>
         )}
         {isNewGroup && (
-          <div className="absolute top-3 left-3 bg-emerald-600 text-white text-xs px-2 py-1 rounded-full font-semibold shadow-sm">
+          <div className="absolute top-3 left-3 bg-emerald-600 text-white text-xs px-2 py-1 rounded-full font-semibold shadow-sm z-20">
             NEW + {newCount}
           </div>
         )}
         {ad.duplicates_count && ad.duplicates_count > 0 && (
-          <div className={`absolute ${isNewGroup ? 'top-14' : 'top-2'} left-3 bg-violet-600 text-white text-xs px-2 py-1 rounded-full font-medium z-20`}>
+          <div className={`absolute ${isNewGroup ? 'top-14' : 'top-2'} left-3 bg-violet-600 text-white text-xs px-2 py-1 rounded-full font-medium z-10`}>
             {ad.duplicates_count} duplicates
           </div>
         )}
@@ -55,6 +58,11 @@ export function AdCard({ ad }: AdCardProps) {
         <p className="text-xs text-slate-500 truncate mb-1">{ad.page_name}</p>
         {ad.competitor_niche && (
           <p className="text-xs text-purple-600 truncate mb-2">📂 {ad.competitor_niche}</p>
+        )}
+        {ad.ai_description && (
+          <p className="text-xs text-slate-700 mb-2 line-clamp-2 bg-blue-50 p-2 rounded">
+            🤖 {ad.ai_description}
+          </p>
         )}
         {(ad.start_date_formatted || ad.end_date_formatted) && (
           <div className="mt-auto pt-2 border-t border-slate-200">

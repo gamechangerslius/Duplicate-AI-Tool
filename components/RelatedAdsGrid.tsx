@@ -64,23 +64,41 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
 
   useEffect(() => {
     const loadImages = async () => {
-      const urls: Record<string, string> = {};
-      for (const ad of items) {
-        if (!ad.image_url && !imageUrls[ad.ad_archive_id]) {
-          console.log(`[RelatedAdsGrid] Loading image for ad=${ad.ad_archive_id}, business=${businessSlug}`);
-          const url = await getCreativeUrl(ad.ad_archive_id, businessSlug);
-          if (url) {
-            urls[ad.ad_archive_id] = url;
-            console.log(`[RelatedAdsGrid] ✓ Found image: ${url.substring(0, 80)}...`);
-          } else {
-            console.warn(`[RelatedAdsGrid] ✗ No image found for ad=${ad.ad_archive_id}`);
-          }
+      // Collect ads that need image loading
+      const adsNeedingImages = items.filter(ad => !ad.image_url && !imageUrls[ad.ad_archive_id]);
+      
+      if (adsNeedingImages.length === 0) return;
+
+      console.log(`[RelatedAdsGrid] Loading ${adsNeedingImages.length} images in parallel...`);
+      
+      // Load all images in parallel
+      const imagePromises = adsNeedingImages.map(async (ad) => {
+        const url = await getCreativeUrl(ad.ad_archive_id, businessSlug);
+        if (url) {
+          console.log(`[RelatedAdsGrid] ✓ Found image for ${ad.ad_archive_id}: ${url.substring(0, 60)}...`);
+          return { adId: ad.ad_archive_id, url };
+        } else {
+          console.warn(`[RelatedAdsGrid] ✗ No image found for ad=${ad.ad_archive_id}`);
+          return null;
         }
-      }
-      if (Object.keys(urls).length > 0) {
-        setImageUrls(prev => ({ ...prev, ...urls }));
+      });
+
+      // Wait for all to complete and update state once
+      const results = await Promise.all(imagePromises);
+      const newUrls: Record<string, string> = {};
+      
+      results.forEach(result => {
+        if (result) {
+          newUrls[result.adId] = result.url;
+        }
+      });
+
+      if (Object.keys(newUrls).length > 0) {
+        setImageUrls(prev => ({ ...prev, ...newUrls }));
+        console.log(`[RelatedAdsGrid] ✓ Loaded ${Object.keys(newUrls).length} images`);
       }
     };
+    
     loadImages();
   }, [items, businessSlug, imageUrls, sortByStatus]);
 

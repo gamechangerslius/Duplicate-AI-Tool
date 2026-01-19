@@ -21,6 +21,7 @@ export interface Ad {
   status?: 'New' | 'Scaling' | 'Inactive';
   diff_count?: number | null;
   meta_ad_url?: string;
+  ai_description?: string;
   raw?: Record<string, any>;
 }
 

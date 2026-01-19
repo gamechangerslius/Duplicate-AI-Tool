@@ -23,6 +23,7 @@ export async function fetchAds(
     startDate?: string;
     endDate?: string;
     displayFormat?: 'IMAGE' | 'VIDEO' | 'ALL';
+    aiDescription?: string;
   },
   pagination?: { page: number; perPage: number }
 ): Promise<{ ads: Ad[]; total: number }> {
@@ -46,10 +47,33 @@ export async function fetchAds(
 
     if (gErr || !groups) throw gErr;
 
-    // 3. Filter by duplicates range and paginate
+    // 3. Filter by duplicates range
     const minDup = filters?.duplicatesRange?.min ?? 0;
     const maxDup = filters?.duplicatesRange?.max ?? Number.MAX_SAFE_INTEGER;
     let filteredGroups = groups.filter(g => Number(g.items) >= minDup && Number(g.items) <= maxDup);
+    
+    // 3.5. Filter by ai_description if provided (before pagination)
+    if (filters?.aiDescription && filteredGroups.length > 0) {
+      const aiDescFilter = filters.aiDescription.toLowerCase();
+      const vectorGroups = filteredGroups.map(g => g.vector_group);
+      
+      // Fetch ai_description from STATUS_VIEW for all vector groups
+      const { data: groupsWithDesc } = await supabase
+        .from(ADS_GROUPS_STATUS_VIEW)
+        .select('vector_group, ai_description')
+        .in('vector_group', vectorGroups)
+        .eq('business_id', filters.businessId);
+      
+      // Build set of vector_groups that match the filter
+      const matchingGroupIds = new Set(
+        (groupsWithDesc || [])
+          .filter((group: any) => group.ai_description && group.ai_description.toLowerCase().includes(aiDescFilter))
+          .map((group: any) => group.vector_group)
+      );
+      
+      // Filter groups to only those that match
+      filteredGroups = filteredGroups.filter(g => matchingGroupIds.has(g.vector_group));
+    }
     
     const totalGroups = filteredGroups.length;
     const pageGroups = filteredGroups.slice((page - 1) * perPage, page * perPage);
@@ -105,6 +129,7 @@ export async function fetchAds(
         end_date_formatted: meta?.max_end || rep.end_date_formatted,
         vector_group: g.vector_group,
         meta_ad_url: `https://www.facebook.com/ads/library/?id=${rep.ad_archive_id}`,
+        ai_description: status?.ai_description || rep.ai_description,
         created_at: rep.created_at
       };
     }).filter(Boolean) as Ad[];
