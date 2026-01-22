@@ -156,7 +156,7 @@ function HomeContent() {
       
       setAuthCheckLoading(false);
     })();
-  }, []);
+  }, [businessId, searchParams]);
 
   const loadData = useCallback(async () => {
     if (!businessId) return;

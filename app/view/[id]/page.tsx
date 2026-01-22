@@ -96,7 +96,7 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
               {ad.ai_description && (
                 <div className="p-6 bg-zinc-50 rounded-2xl border border-zinc-100 italic text-zinc-600 text-sm leading-relaxed">
                   <span className="not-italic font-black text-[9px] uppercase tracking-widest text-zinc-400 block mb-2">AI Analysis</span>
-                  "{ad.ai_description}"
+                  &quot;{ad.ai_description}&quot;
                 </div>
               )}
             </section>
