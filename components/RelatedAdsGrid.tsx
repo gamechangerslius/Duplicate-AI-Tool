@@ -17,9 +17,16 @@ interface Props {
 export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId, businessId, businessSlug }: Props) {
   const [selected, setSelected] = useState<Ad | null>(null);
   const [items, setItems] = useState<Ad[]>([]);
+  const [queued, setQueued] = useState<Ad[]>([]);
   const [loading, setLoading] = useState(false);
   const [cursor, setCursor] = useState<string | null>(ads.length ? ads[ads.length - 1].ad_archive_id : null);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(() => {
+    const initialVisible = Math.min(6, ads.length);
+    const total = groupSize || ads.length;
+    if (initialVisible >= total) return false;
+    if (ads.length > 6) return true;
+    return true;
+  });
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
 
   const dedupeByGroup = (list: Ad[]) => {
@@ -57,9 +64,21 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
   };
 
   useEffect(() => {
-    const next = sortByStatus(ads);
-    setItems(next);
-    setCursor(next.length ? next[next.length - 1].ad_archive_id : null);
+    const sorted = sortByStatus(ads);
+    const initialVisible = sorted.slice(0, 6);
+    const rest = sorted.slice(6);
+    setItems(initialVisible);
+    setQueued(rest);
+    setCursor(initialVisible.length ? initialVisible[initialVisible.length - 1].ad_archive_id : null);
+
+    const total = groupSize || sorted.length;
+    if (initialVisible.length >= total) {
+      setHasMore(false);
+    } else if (rest.length > 0) {
+      setHasMore(true);
+    } else {
+      setHasMore(true);
+    }
   }, [ads, sortByStatus]);
 
   useEffect(() => {
@@ -104,6 +123,32 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
 
   async function loadMore() {
     if (loading || !hasMore) return;
+    if (groupSize && items.length >= groupSize) {
+      setHasMore(false);
+      return;
+    }
+
+    // First, drain queued items before hitting the network
+    if (queued.length > 0) {
+      const chunk = queued.slice(0, 6);
+      const remaining = queued.slice(chunk.length);
+      setQueued(remaining);
+      const updated = sortByStatus([...items, ...chunk]);
+      setItems(updated);
+      setCursor(updated.length ? updated[updated.length - 1].ad_archive_id : null);
+
+      const total = updated.length;
+      if (groupSize && total >= groupSize) {
+        setHasMore(false);
+      } else if (remaining.length > 0) {
+        setHasMore(true);
+      } else {
+        // Still allow further fetch
+        setHasMore(true);
+      }
+      return;
+    }
+
     setLoading(true);
     try {
       const params = new URLSearchParams({ 
@@ -117,9 +162,15 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
       const json = await res.json();
       const newItems: Ad[] = json.items || [];
       if (newItems.length > 0) {
-        setItems(prev => sortByStatus([...prev, ...newItems]));
+        const updated = sortByStatus([...items, ...newItems]);
+        setItems(updated);
         setCursor(json.nextCursor || newItems[newItems.length - 1].ad_archive_id);
-        setHasMore(Boolean(json.hasMore));
+        const total = updated.length;
+        if (groupSize && total >= groupSize) {
+          setHasMore(false);
+        } else {
+          setHasMore(Boolean(json.hasMore));
+        }
       } else {
         setHasMore(false);
       }
@@ -222,37 +273,47 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
             </div>
 
             <div className="p-4 text-sm text-slate-900 max-h-[70vh] overflow-y-auto">
-              {selected.raw && (
-                <div>
-                  <div className="text-slate-900 font-semibold mb-2 text-sm">Full DB Fields</div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-900">
-                    {Object.entries(selected.raw).map(([key, value]) => {
-                      const isLink = typeof value === 'string' && /^https?:\/\//i.test(value);
-                      const renderedValue = isLink ? (
-                        <a
-                          href={value as string}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-blue-600 hover:text-blue-700 break-words"
-                        >
-                          {value as string}
-                        </a>
-                      ) : typeof value === 'object'
-                        ? JSON.stringify(value)
-                        : String(value);
+              {(() => {
+                const source = (selected as any)?.raw ?? selected;
+                if (!source || typeof source !== 'object') return null;
+                const entries = Object.entries(source as Record<string, any>)
+                  .filter(([key, value]) => {
+                    if (/^embedding_vec/i.test(key)) return false;
+                    if (value === null || value === undefined) return false;
+                    return true;
+                  });
+                return (
+                  <div>
+                    <div className="text-slate-900 font-semibold mb-2 text-sm">Full DB Fields</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-900">
+                      {entries.map(([key, value]) => {
+                        const isLink = typeof value === 'string' && /^https?:\/\//i.test(value);
+                        const renderedValue = isLink ? (
+                          <a
+                            href={value as string}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-600 hover:text-blue-700 break-words"
+                          >
+                            {value as string}
+                          </a>
+                        ) : typeof value === 'object'
+                          ? JSON.stringify(value)
+                          : String(value);
 
-                      return (
-                        <div key={key} className="contents">
-                          <div className="text-slate-500 break-words">{key}</div>
-                          <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900 break-words">
-                            {renderedValue}
+                        return (
+                          <div key={key} className="contents">
+                            <div className="text-slate-500 break-words">{key}</div>
+                            <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900 break-words">
+                              {renderedValue}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
           </div>
         </div>

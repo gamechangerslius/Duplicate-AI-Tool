@@ -165,7 +165,7 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
                   🎬 View in Meta
                 </a>
                 <a
-                  href={`https://www.facebook.com/ads/library/`}
+                  href={`https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}`}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-slate-200 text-slate-900 text-sm hover:bg-slate-300 transition whitespace-nowrap"
@@ -200,6 +200,52 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
 
             {/* Group Metadata Component */}
             <GroupMetadata vectorGroup={ad.vector_group} businessId={businessId} />
+
+            {/* Current Creative Full Metadata (excluding embedding vectors). Falls back to full record when raw is missing. */}
+            {(() => {
+              const source = (ad as any)?.raw ?? ad;
+              if (!source || typeof source !== 'object') return null;
+              const entries = Object.entries(source as Record<string, any>)
+                .filter(([key, value]) => {
+                  if (/^embedding_vec/i.test(key)) return false;
+                  if (value === null || value === undefined) return false;
+                  return true;
+                });
+
+              return (
+                <div className="mt-6 bg-white rounded-xl p-4 shadow-sm border border-slate-200">
+                  <h3 className="text-slate-900 font-semibold mb-3">Current Creative Metadata</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                    {entries.map(([key, value]) => {
+                      const isLink = typeof value === 'string' && /^https?:\/\//i.test(value);
+                      const renderedValue = isLink
+                        ? (
+                            <a
+                              href={value}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-600 hover:text-blue-700 break-words"
+                            >
+                              {value}
+                            </a>
+                          )
+                        : typeof value === 'object'
+                          ? JSON.stringify(value)
+                          : String(value);
+
+                      return (
+                        <div key={key} className="contents">
+                          <div className="text-slate-500 break-words">{key}</div>
+                          <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900 break-words">
+                            {renderedValue}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -241,14 +287,22 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
               </div>
             </div>
 
-            {/* Representative DB Data (excluding embedding_vec) */}
-            {ad.raw && (
-              <div className="mt-4 bg-white rounded-xl p-4 shadow-sm">
-                <h3 className="text-slate-900 font-semibold mb-3">Representative DB Data</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-                  {Object.entries(ad.raw as Record<string, any>)
-                    .filter(([key]) => !['embedding_vec_512', 'cards_json', 'cards_count', 'raw_json'].includes(key))
-                    .map(([key, value]) => {
+            {/* Representative DB Data (excluding embedding vectors). Falls back to full record when raw is missing. */}
+            {representative && (() => {
+              const source = (representative as any)?.raw ?? representative;
+              if (!source || typeof source !== 'object') return null;
+              const entries = Object.entries(source as Record<string, any>)
+                .filter(([key, value]) => {
+                  if (/^embedding_vec/i.test(key)) return false;
+                  if (value === null || value === undefined) return false;
+                  return true;
+                });
+
+              return (
+                <div className="mt-4 bg-white rounded-xl p-4 shadow-sm">
+                  <h3 className="text-slate-900 font-semibold mb-3">Representative DB Data</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                    {entries.map(([key, value]) => {
                       const isLink = typeof value === 'string' && /^https?:\/\//i.test(value);
                       const renderedValue = isLink
                         ? (
@@ -268,15 +322,16 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
                       return (
                         <div key={key} className="contents">
                           <div className="text-slate-500 break-words">{key}</div>
-                          <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900">
+                          <div className="max-h-32 overflow-y-auto border border-slate-200 rounded p-2 text-slate-900 break-words">
                             {renderedValue}
                           </div>
                         </div>
                       );
                     })}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Additional Creatives (cards_json) */}
             {ad.raw && (ad.raw as any).cards_json && (() => {
