@@ -4,40 +4,29 @@ interface ViewToggleProps {
 }
 
 export function ViewToggle({ value, onChange }: ViewToggleProps) {
+  const options = [
+    { id: 'ALL', label: 'All' },
+    { id: 'IMAGE', label: 'Images' },
+    { id: 'VIDEO', label: 'Videos' },
+  ] as const;
+
   return (
-    <div className="mb-8">
-      <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1">
+    <div className="flex p-1 bg-zinc-100/50 rounded-xl border border-zinc-100 w-fit">
+      {options.map((option) => (
         <button
-          onClick={() => onChange('ALL')}
-          className={`px-6 py-2 rounded-md text-sm font-medium transition-colors ${
-            value === 'ALL'
-              ? 'bg-blue-600 text-white'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
+          key={option.id}
+          onClick={() => onChange(option.id)}
+          className={`
+            px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] transition-all duration-300
+            ${value === option.id
+              ? 'bg-white text-zinc-950 shadow-sm ring-1 ring-zinc-200/50'
+              : 'text-zinc-400 hover:text-zinc-600'
+            }
+          `}
         >
-          All
+          {option.label}
         </button>
-        <button
-          onClick={() => onChange('IMAGE')}
-          className={`px-6 py-2 rounded-md text-sm font-medium transition-colors ${
-            value === 'IMAGE'
-              ? 'bg-blue-600 text-white'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          Images
-        </button>
-        <button
-          onClick={() => onChange('VIDEO')}
-          className={`px-6 py-2 rounded-md text-sm font-medium transition-colors ${
-            value === 'VIDEO'
-              ? 'bg-blue-600 text-white'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          Videos
-        </button>
-      </div>
+      ))}
     </div>
   );
 }

@@ -118,7 +118,7 @@ export function UserMenu() {
           
           <div className="py-2">
             <Link
-              href="/setup"
+              href={typeof window !== 'undefined' ? `/setup?returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}` : '/setup'}
               className="flex items-center gap-3 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
             >
               <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -129,7 +129,7 @@ export function UserMenu() {
             </Link>
             
             <Link
-              href="/"
+              href={typeof window !== 'undefined' ? (window.location.pathname === '/' ? window.location.pathname + window.location.search : '/') : '/'}
               className="flex items-center gap-3 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
             >
               <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">

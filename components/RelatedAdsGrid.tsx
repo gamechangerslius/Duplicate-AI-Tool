@@ -12,6 +12,7 @@ interface Props {
   currentAdArchiveId: string;
   businessId: string;
   businessSlug: string;
+  searchParams?: Record<string, string | string[] | undefined>;
 }
 
 export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId, businessId, businessSlug }: Props) {
@@ -79,7 +80,7 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
     } else {
       setHasMore(true);
     }
-  }, [ads, sortByStatus]);
+  }, [ads, sortByStatus, groupSize]);
 
   useEffect(() => {
     const loadImages = async () => {

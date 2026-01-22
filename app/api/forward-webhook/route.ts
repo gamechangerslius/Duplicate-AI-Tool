@@ -49,16 +49,18 @@ function safeJsonStringify(v: any) {
   }
 }
 
-function normalizeAndValidateUrls(rawLinks: any[]): { urls: string[]; rejected: any[] } {
+type NormalizedLink = { url: string; maxAds?: number };
+
+function normalizeAndValidateUrls(rawLinks: any[], defaultMax: number | undefined): { links: NormalizedLink[]; rejected: any[] } {
   const rejected: any[] = [];
-  const urls: string[] = [];
+  const links: NormalizedLink[] = [];
 
   for (const item of rawLinks) {
-    // Accept either "string" or "{ url: string }"
+    // Accept string, { url }, or { url, maxAds }
     const candidate = item?.url ?? item;
     let s = String(candidate ?? "");
 
-    // IMPORTANT: remove ALL whitespace inside the URL (fixes \n breaks from UI copy)
+    // Remove whitespace inside the URL
     s = s.trim().replace(/\s+/g, "");
 
     if (!s) {
@@ -72,15 +74,29 @@ function normalizeAndValidateUrls(rawLinks: any[]): { urls: string[]; rejected: 
         rejected.push({ reason: "bad-protocol", item, normalized: s });
         continue;
       }
-      urls.push(u.toString());
+
+      const parsedMax = Number(item?.maxAds);
+      const maxAdsVal = Number.isFinite(parsedMax) ? parsedMax : defaultMax;
+
+      links.push({
+        url: u.toString(),
+        maxAds: maxAdsVal,
+      });
     } catch {
       rejected.push({ reason: "invalid-url", item, normalized: s });
     }
   }
 
-  // unique
-  const unique = Array.from(new Set(urls));
-  return { urls: unique, rejected };
+  // unique by URL, keep first maxAds encountered
+  const seen = new Set<string>();
+  const unique: NormalizedLink[] = [];
+  for (const entry of links) {
+    if (seen.has(entry.url)) continue;
+    seen.add(entry.url);
+    unique.push(entry);
+  }
+
+  return { links: unique, rejected };
 }
 
 export async function POST(req: Request) {
@@ -89,12 +105,12 @@ export async function POST(req: Request) {
   try {
     // ---- Read body ----
     const body = await req.json().catch(() => ({}));
-    const { links, businessId, maxAds } = body ?? {};
+    const { links, businessId, maxAds: defaultMaxAds } = body ?? {};
 
     console.log(`\n[${reqId}] ===== /api/forward-webhook POST =====`);
     console.log(`[${reqId}] body keys:`, body ? Object.keys(body) : null);
     console.log(`[${reqId}] businessId:`, businessId);
-    console.log(`[${reqId}] maxAds:`, maxAds || 50);
+    console.log(`[${reqId}] default maxAds:`, defaultMaxAds || 50);
     console.log(
       `[${reqId}] links type:`,
       typeof links,
@@ -168,14 +184,14 @@ export async function POST(req: Request) {
     }
 
     // ---- Normalize URLs (MOST IMPORTANT) ----
-    const { urls, rejected } = normalizeAndValidateUrls(links);
+    const { links: normalizedLinks, rejected } = normalizeAndValidateUrls(links, defaultMaxAds);
 
-    console.log(`[${reqId}] normalized urls count:`, urls.length);
-    console.log(`[${reqId}] normalized urls sample:`, urls.slice(0, 3).map((u) => safeJsonStringify(u)));
+    console.log(`[${reqId}] normalized urls count:`, normalizedLinks.length);
+    console.log(`[${reqId}] normalized urls sample:`, normalizedLinks.slice(0, 3).map((u) => safeJsonStringify(u)));
     console.log(`[${reqId}] rejected count:`, rejected.length);
     if (rejected.length) console.log(`[${reqId}] rejected sample:`, rejected.slice(0, 3));
 
-    if (urls.length === 0) {
+    if (normalizedLinks.length === 0) {
       console.log(`[${reqId}] ❌ No valid URLs after normalization`);
       return NextResponse.json(
         {
@@ -191,53 +207,56 @@ export async function POST(req: Request) {
       `https://api.apify.com/v2/acts/${encodeURIComponent(apifyActorId)}` +
       `/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}&timeout=55`;
 
-    // IMPORTANT: this actor requires input.urls
-    const runInput = {
-      urls: urls.map((u) => ({ url: u })), // 👈 важно
-      includeAdsData: true,
-      maxAds: Math.min(Math.max(maxAds || 50, 1), 100), // Clamp between 1-100
-    };
+    const allResults: any[] = [];
 
+    for (const entry of normalizedLinks) {
+      const maxAdsForLink = Math.min(Math.max(entry.maxAds || defaultMaxAds || 50, 1), 100);
+      const runInput = {
+        urls: [{ url: entry.url }],
+        includeAdsData: true,
+        maxAds: maxAdsForLink,
+      };
 
-    console.log(`[${reqId}] 🚀 Apify URL:`, apifySyncUrl.replace(apifyToken, "****"));
-    console.log(`[${reqId}] 📝 Apify input keys:`, Object.keys(runInput));
-    console.log(`[${reqId}] 📝 Apify input.urls length:`, runInput.urls.length);
-    console.log(`[${reqId}] 📝 Apify input.urls[0]:`, safeJsonStringify(runInput.urls[0]));
+      console.log(`[${reqId}] 🚀 Running Apify for URL:`, entry.url);
+      console.log(`[${reqId}] 📝 maxAds for this URL:`, maxAdsForLink);
 
-    // ---- Call Apify ----
-    const response = await fetch(apifySyncUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(runInput),
-    });
+      const response = await fetch(apifySyncUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(runInput),
+      });
 
-    console.log(`[${reqId}] Apify response status:`, response.status);
+      console.log(`[${reqId}] Apify response status:`, response.status);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log(`[${reqId}] ❌ Apify error body:`, errorText);
-      return NextResponse.json(
-        {
-          message: "Apify error",
-          status: response.status,
-          apify: errorText,
-          debug: { sentUrlsSample: urls.slice(0, 3), rejectedSample: rejected.slice(0, 3) },
-        },
-        { status: response.status }
-      );
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log(`[${reqId}] ❌ Apify error body:`, errorText);
+        return NextResponse.json(
+          {
+            message: "Apify error",
+            status: response.status,
+            apify: errorText,
+            debug: { sentUrl: entry.url, rejectedSample: rejected.slice(0, 3) },
+          },
+          { status: response.status }
+        );
+      }
+
+      const resultsData = await response.json().catch(async () => {
+        const t = await response.text();
+        console.log(`[${reqId}] ⚠️ Apify returned non-JSON, body:`, t);
+        throw new Error("Apify returned non-JSON response");
+      });
+
+      console.log(`[${reqId}] ✅ Items received for URL:`, Array.isArray(resultsData) ? resultsData.length : "not-array");
+
+      if (Array.isArray(resultsData) && resultsData.length > 0) {
+        allResults.push(...resultsData);
+      }
     }
 
-    const resultsData = await response.json().catch(async () => {
-      const t = await response.text();
-      console.log(`[${reqId}] ⚠️ Apify returned non-JSON, body:`, t);
-      throw new Error("Apify returned non-JSON response");
-    });
-
-    console.log(`[${reqId}] ✅ Apify items received:`, Array.isArray(resultsData) ? resultsData.length : "not-array");
-    console.log(`[${reqId}] 📊 First item sample:`, safeJsonStringify(Array.isArray(resultsData) && resultsData[0] ? resultsData[0] : null));
-
     // ---- Parse Apify results and save to database ----
-    if (!Array.isArray(resultsData) || resultsData.length === 0) {
+    if (!Array.isArray(allResults) || allResults.length === 0) {
       console.log(`[${reqId}] ℹ️ No results from Apify`);
       return NextResponse.json({ message: "No data from Apify", items: 0 });
     }
@@ -263,10 +282,10 @@ export async function POST(req: Request) {
     // Process and save each ad
     const savedAds: any[] = [];
     const errors: any[] = [];
-    const totalItems = resultsData.length;
+    const totalItems = allResults.length;
 
-    for (let i = 0; i < resultsData.length; i++) {
-      const item = resultsData[i];
+    for (let i = 0; i < allResults.length; i++) {
+      const item = allResults[i];
       try {
         console.log(`[${reqId}] 📊 Progress: ${i + 1}/${totalItems} (${Math.round(((i + 1) / totalItems) * 100)}%)`);
         

@@ -67,8 +67,13 @@ function AuthPageContent() {
         return
       }
 
-      // Redirect to home with new business selected
-      router.push(`/?businessId=${newBiz.id}`)
+      // Redirect to returnTo URL or home with new business selected
+      const returnTo = searchParams.get('returnTo')
+      if (returnTo) {
+        router.push(returnTo)
+      } else {
+        router.push(`/?businessId=${newBiz.id}`)
+      }
     } finally {
       setCreatingBusiness(false)
     }
@@ -105,8 +110,9 @@ function AuthPageContent() {
         if (error) {
           setError(error.message)
         } else {
-          // Redirect to home after successful login
-          router.push('/')
+          // Redirect to returnTo URL or home after successful login
+          const returnTo = searchParams.get('returnTo')
+          router.push(returnTo || '/')
         }
       }
     } catch (err) {

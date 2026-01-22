@@ -24,6 +24,7 @@ export async function fetchAds(
     endDate?: string;
     displayFormat?: 'IMAGE' | 'VIDEO' | 'ALL';
     aiDescription?: string;
+    sortBy?: 'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc' | 'end_date_asc' | 'end_date_desc';
   },
   pagination?: { page: number; perPage: number }
 ): Promise<{ ads: Ad[]; total: number }> {
@@ -133,6 +134,28 @@ export async function fetchAds(
         created_at: rep.created_at
       };
     }).filter(Boolean) as Ad[];
+
+    // 6. Apply Sorting
+    if (filters?.sortBy) {
+      ads.sort((a, b) => {
+        switch (filters.sortBy) {
+          case 'newest':
+            return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+          case 'oldest':
+            return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+          case 'start_date_desc':
+            return new Date(b.start_date_formatted || 0).getTime() - new Date(a.start_date_formatted || 0).getTime();
+          case 'start_date_asc':
+            return new Date(a.start_date_formatted || 0).getTime() - new Date(b.start_date_formatted || 0).getTime();
+          case 'end_date_desc':
+            return new Date(b.end_date_formatted || 0).getTime() - new Date(a.end_date_formatted || 0).getTime();
+          case 'end_date_asc':
+            return new Date(a.end_date_formatted || 0).getTime() - new Date(b.end_date_formatted || 0).getTime();
+          default:
+            return 0;
+        }
+      });
+    }
 
     const result = { ads, total: totalGroups };
     adsCacheMap.set(cacheKey, { data: result, time: Date.now() });
