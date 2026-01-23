@@ -9,9 +9,10 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { LocalizationProvider, DatePicker } from '@mui/x-date-pickers';
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
 import { enUS } from '@mui/x-date-pickers/locales';
+import { Slider } from '@mui/material';
 import dayjs from 'dayjs';
 
-import { fetchAds, fetchPageNames } from '@/utils/supabase/db';
+import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/utils/supabase/db';
 import type { Ad } from '@/lib/types';
 import { AdCard } from '@/components/AdCard';
 import { ViewToggle } from '@/components/ViewToggle';
@@ -28,7 +29,7 @@ export default function HomeClient() {
   );
 }
 
-function HomeContent() {
+function HomeContent(): JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
   
@@ -36,7 +37,6 @@ function HomeContent() {
   const [ads, setAds] = useState<Ad[]>([]);
   const [pageNames, setPageNames] = useState<{ name: string; count: number }[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [authCheckLoading, setAuthCheckLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -49,6 +49,8 @@ function HomeContent() {
   const [endDate, setEndDate] = useState('');
   const [aiDescription, setAiDescription] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc' | 'end_date_asc' | 'end_date_desc'>('newest');
+  const [duplicatesRange, setDuplicatesRange] = useState<[number, number]>([0, 100]);
+  const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({ min: 0, max: 100 });
   
   // Track if we've initialized from URL
   const initialized = useRef(false);
@@ -63,6 +65,7 @@ function HomeContent() {
     sortBy?: string;
     currentPage?: number;
     businessId?: string;
+    duplicatesRange?: [number, number];
   }) => {
     const query = new URLSearchParams();
     if (params.businessId) query.set('businessId', params.businessId);
@@ -73,6 +76,10 @@ function HomeContent() {
     if (params.aiDescription) query.set('aiDescription', params.aiDescription);
     if (params.sortBy && params.sortBy !== 'newest') query.set('sortBy', params.sortBy);
     if (params.currentPage && params.currentPage > 1) query.set('page', String(params.currentPage));
+    if (params.duplicatesRange && (params.duplicatesRange[0] > 0 || params.duplicatesRange[1] < 100)) {
+      query.set('minDuplicates', String(params.duplicatesRange[0]));
+      query.set('maxDuplicates', String(params.duplicatesRange[1]));
+    }
     return query.toString();
   }, []);
 
@@ -81,8 +88,7 @@ function HomeContent() {
     (async () => {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setIsAuthenticated(false); setAuthCheckLoading(false); return; }
-      setIsAuthenticated(true);
+      if (!user) { setAuthCheckLoading(false); return; }
 
       const { data: biz } = await supabase.from('businesses').select('*');
       const bData = biz || [];
@@ -95,6 +101,22 @@ function HomeContent() {
       if (initialBusinessId) {
         setBusinessId(initialBusinessId);
         const pages = await fetchPageNames(initialBusinessId);
+        
+        // Fetch duplicates stats for slider range
+        const stats = await fetchDuplicatesStats(initialBusinessId);
+        setDuplicatesStats(stats);
+        
+        // Initialize duplicates range from URL
+        const minDuplicatesParam = searchParams.get('minDuplicates');
+        const maxDuplicatesParam = searchParams.get('maxDuplicates');
+        if (minDuplicatesParam || maxDuplicatesParam) {
+          const min = minDuplicatesParam ? parseInt(minDuplicatesParam) : stats.min;
+          const max = maxDuplicatesParam ? parseInt(maxDuplicatesParam) : stats.max;
+          setDuplicatesRange([min, max]);
+        } else {
+          setDuplicatesRange([stats.min, stats.max]);
+        }
+        
         setPageNames(pages);
       }
       
@@ -117,9 +139,6 @@ function HomeContent() {
       const sortByParam = searchParams.get('sortBy') as any;
       if (sortByParam) setSortBy(sortByParam);
       
-      const pageParam = searchParams.get('page');
-      if (pageParam) setCurrentPage(parseInt(pageParam, 10));
-      
       initialized.current = true;
       setAuthCheckLoading(false);
     })();
@@ -137,19 +156,24 @@ function HomeContent() {
       endDate,
       aiDescription,
       sortBy,
-      currentPage
+      currentPage,
+      duplicatesRange
     });
     
     const newUrl = queryString ? `/?${queryString}` : '/';
     router.replace(newUrl);
-  }, [businessId, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, buildQueryString, router]);
+  }, [businessId, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, duplicatesRange, buildQueryString, router]);
   
-  // Fetch page names when businessId changes
+  // Fetch page names and duplicates stats when businessId changes
   useEffect(() => {
     if (businessId && initialized.current) {
       (async () => {
         const pages = await fetchPageNames(businessId);
         setPageNames(pages);
+        
+        const stats = await fetchDuplicatesStats(businessId);
+        setDuplicatesStats(stats);
+        setDuplicatesRange([stats.min, stats.max]);
       })();
     }
   }, [businessId]);
@@ -157,17 +181,24 @@ function HomeContent() {
   const loadData = useCallback(async () => {
     if (!businessId) return;
     setLoading(true);
+    const duplicatesFilter = (duplicatesRange[0] > duplicatesStats.min || duplicatesRange[1] < duplicatesStats.max) ? {
+      min: duplicatesRange[0],
+      max: duplicatesRange[1]
+    } : undefined;
     const { ads: data, total } = await fetchAds({
-      businessId, pageName: selectedPage || undefined,
-      startDate: startDate || undefined, endDate: endDate || undefined,
+      businessId, 
+      pageName: selectedPage || undefined,
+      startDate: startDate || undefined, 
+      endDate: endDate || undefined,
       displayFormat: displayFormat === 'ALL' ? undefined : displayFormat,
       aiDescription: aiDescription || undefined,
-      sortBy: sortBy || undefined
+      sortBy: sortBy || undefined,
+      duplicatesRange: duplicatesFilter
     }, { page: currentPage, perPage: PER_PAGE });
     setAds(data);
     setTotalPages(Math.ceil(total / PER_PAGE));
     setLoading(false);
-  }, [businessId, selectedPage, startDate, endDate, displayFormat, aiDescription, currentPage, sortBy]);
+  }, [businessId, selectedPage, startDate, endDate, displayFormat, aiDescription, currentPage, sortBy, duplicatesRange, duplicatesStats]);
 
   useEffect(() => { if (businessId) loadData(); }, [loadData, businessId]);
 
@@ -202,7 +233,7 @@ function HomeContent() {
             >
               {businesses.map(b => <option key={b.id} value={b.id}>{b.name || b.slug}</option>)}
             </select>
-            <Link href={`/setup?returnTo=${encodeURIComponent(`/?${buildQueryString({ businessId: businessId || undefined, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage })}`)}`} className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm">
+            <Link href={`/setup?returnTo=${encodeURIComponent(`/?${buildQueryString({ businessId: businessId || undefined, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, duplicatesRange })}`)}`} className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm">
               Import
             </Link>
           </div>
@@ -246,6 +277,50 @@ function HomeContent() {
           </div>
         </div>
 
+        {/* Duplicates Range Filter */}
+        <div className="mb-6 bg-white border border-zinc-200 rounded-lg p-4 max-w-md">
+          <div className="flex items-center justify-between mb-3">
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Duplicates</label>
+            <span className="text-[10px] font-bold text-zinc-900 tabular-nums">
+              {duplicatesRange[0]} - {duplicatesRange[1]}
+            </span>
+          </div>
+          <Slider
+            value={duplicatesRange}
+            onChange={(_, newValue) => setDuplicatesRange(newValue as [number, number])}
+            valueLabelDisplay="auto"
+            min={duplicatesStats.min}
+            max={duplicatesStats.max}
+            sx={{
+              color: '#18181b',
+              height: 3,
+              '& .MuiSlider-thumb': {
+                width: 16,
+                height: 16,
+                '&:hover, &.Mui-focusVisible': {
+                  boxShadow: '0 0 0 6px rgba(24, 24, 27, 0.12)',
+                },
+              },
+              '& .MuiSlider-track': {
+                height: 3,
+              },
+              '& .MuiSlider-rail': {
+                height: 3,
+                opacity: 0.2,
+              },
+              '& .MuiSlider-valueLabel': {
+                fontSize: 10,
+                fontWeight: 'bold',
+                padding: '4px 6px',
+              },
+            }}
+          />
+          <div className="flex justify-between mt-1">
+            <span className="text-[9px] text-zinc-400 tabular-nums">{duplicatesStats.min}</span>
+            <span className="text-[9px] text-zinc-400 tabular-nums">{duplicatesStats.max}</span>
+          </div>
+        </div>
+
         {/* 4. CONTENT ACTION BAR (Toggle & Counter) */}
         <div className="flex items-center justify-between py-6 mb-8 border-y border-zinc-50">
           <div className="bg-zinc-50 p-1 rounded-lg border border-zinc-100">
@@ -281,7 +356,8 @@ function HomeContent() {
                       endDate,
                       aiDescription,
                       sortBy,
-                      currentPage
+                      currentPage,
+                      duplicatesRange
                     });
                     
                     const returnToUrl = `/?${queryString}`;

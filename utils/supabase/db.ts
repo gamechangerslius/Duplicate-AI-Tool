@@ -49,9 +49,13 @@ export async function fetchAds(
     if (gErr || !groups) throw gErr;
 
     // 3. Filter by duplicates range
+    // Note: items is total ads in group, duplicates = items - 1
     const minDup = filters?.duplicatesRange?.min ?? 0;
     const maxDup = filters?.duplicatesRange?.max ?? Number.MAX_SAFE_INTEGER;
-    let filteredGroups = groups.filter(g => Number(g.items) >= minDup && Number(g.items) <= maxDup);
+    let filteredGroups = groups.filter(g => {
+      const duplicates = Number(g.items) - 1;
+      return duplicates >= minDup && duplicates <= maxDup;
+    });
     
     // 3.5. Filter by ai_description if provided (before pagination)
     if (filters?.aiDescription && filteredGroups.length > 0) {
@@ -124,7 +128,7 @@ export async function fetchAds(
         display_format: rep.display_format,
         new_count: Number(meta?.recent_count || 0),
         group_status: status?.status || 'Stable',
-        duplicates_count: Number(g.items),
+        duplicates_count: Number(g.items) - 1,
         image_url: imageUrl,
         start_date_formatted: meta?.min_start || rep.start_date_formatted,
         end_date_formatted: meta?.max_end || rep.end_date_formatted,
@@ -397,9 +401,9 @@ export async function fetchDuplicatesStats(businessId: string, pageName?: string
     let q = supabase.from(ADS_GROUPS_STATUS_VIEW).select('items').eq('business_id', businessId);
     const { data, error } = await q;
     if (error || !data) return { min: 0, max: 0 };
-    const items = data.map((r: any) => Number(r.items || 0));
-    const min = items.length ? Math.min(...items) : 0;
-    const max = items.length ? Math.max(...items) : 0;
+    const duplicates = data.map((r: any) => Number(r.items || 0) - 1);
+    const min = duplicates.length ? Math.min(...duplicates) : 0;
+    const max = duplicates.length ? Math.max(...duplicates) : 0;
     return { min, max };
   } catch (err) {
     console.error('fetchDuplicatesStats error', err);
