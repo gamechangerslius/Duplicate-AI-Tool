@@ -76,9 +76,58 @@ function HomeContent() {
     return query.toString();
   }, []);
 
-  // Update URL when filters change
+  // Initialize businesses and filters from URL on mount
   useEffect(() => {
-    if (!initialized.current) return; // Don't update URL during initial load
+    (async () => {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setIsAuthenticated(false); setAuthCheckLoading(false); return; }
+      setIsAuthenticated(true);
+
+      const { data: biz } = await supabase.from('businesses').select('*');
+      const bData = biz || [];
+      setBusinesses(bData);
+      
+      // Initialize all filters from URL
+      const urlBusinessId = searchParams.get('businessId');
+      const initialBusinessId = urlBusinessId || (bData.length > 0 ? bData[0].id : null);
+      
+      if (initialBusinessId) {
+        setBusinessId(initialBusinessId);
+        const pages = await fetchPageNames(initialBusinessId);
+        setPageNames(pages);
+      }
+      
+      // Initialize other filters from URL
+      const displayFormatParam = searchParams.get('displayFormat') as 'ALL' | 'IMAGE' | 'VIDEO' | null;
+      if (displayFormatParam) setDisplayFormat(displayFormatParam);
+      
+      const pageNameParam = searchParams.get('pageName');
+      if (pageNameParam) setSelectedPage(pageNameParam);
+      
+      const startDateParam = searchParams.get('startDate');
+      if (startDateParam) setStartDate(startDateParam);
+      
+      const endDateParam = searchParams.get('endDate');
+      if (endDateParam) setEndDate(endDateParam);
+      
+      const aiDescriptionParam = searchParams.get('aiDescription');
+      if (aiDescriptionParam) setAiDescription(aiDescriptionParam);
+      
+      const sortByParam = searchParams.get('sortBy') as any;
+      if (sortByParam) setSortBy(sortByParam);
+      
+      const pageParam = searchParams.get('page');
+      if (pageParam) setCurrentPage(parseInt(pageParam, 10));
+      
+      initialized.current = true;
+      setAuthCheckLoading(false);
+    })();
+  }, []); // Only on mount
+
+  // Update URL when filters change (after initialization)
+  useEffect(() => {
+    if (!initialized.current || !businessId) return;
     
     const queryString = buildQueryString({
       businessId: businessId || undefined,
@@ -92,71 +141,18 @@ function HomeContent() {
     });
     
     const newUrl = queryString ? `/?${queryString}` : '/';
-    router.push(newUrl);
-  }, [displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, buildQueryString, router]);
-
-  // Initialize from current search params
+    router.replace(newUrl);
+  }, [businessId, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, buildQueryString, router]);
+  
+  // Fetch page names when businessId changes
   useEffect(() => {
-    const displayFormatParam = searchParams.get('displayFormat') as 'ALL' | 'IMAGE' | 'VIDEO' | null;
-    if (displayFormatParam) setDisplayFormat(displayFormatParam);
-    else if (initialized.current) setDisplayFormat('ALL');
-    
-    const pageNameParam = searchParams.get('pageName');
-    if (pageNameParam) setSelectedPage(pageNameParam);
-    else if (initialized.current) setSelectedPage('');
-    
-    const startDateParam = searchParams.get('startDate');
-    if (startDateParam) setStartDate(startDateParam);
-    else if (initialized.current) setStartDate('');
-    
-    const endDateParam = searchParams.get('endDate');
-    if (endDateParam) setEndDate(endDateParam);
-    else if (initialized.current) setEndDate('');
-    
-    const aiDescriptionParam = searchParams.get('aiDescription');
-    if (aiDescriptionParam) setAiDescription(aiDescriptionParam);
-    else if (initialized.current) setAiDescription('');
-    
-    const sortByParam = searchParams.get('sortBy') as any;
-    if (sortByParam) setSortBy(sortByParam);
-    else if (initialized.current) setSortBy('newest');
-    
-    const pageParam = searchParams.get('page');
-    if (pageParam) setCurrentPage(parseInt(pageParam, 10));
-    else if (initialized.current) setCurrentPage(1);
-    
-    if (!initialized.current) initialized.current = true;
-  }, [searchParams]);
-
-  useEffect(() => {
-    (async () => {
-      const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setIsAuthenticated(false); setAuthCheckLoading(false); return; }
-      setIsAuthenticated(true);
-
-      const { data: biz } = await supabase.from('businesses').select('*');
-      const bData = biz || [];
-      setBusinesses(bData);
-      
-      // Get businessId from URL, don't override with first business
-      const urlBusinessId = searchParams.get('businessId');
-      if (urlBusinessId) {
-        setBusinessId(urlBusinessId);
-      } else if (!businessId && bData.length > 0) {
-        setBusinessId(bData[0].id);
-      }
-      
-      // Only fetch page names if businessId is set
-      const validBusinessId = businessId || urlBusinessId;
-      if (validBusinessId) {
-        const pages = await fetchPageNames(validBusinessId);
+    if (businessId && initialized.current) {
+      (async () => {
+        const pages = await fetchPageNames(businessId);
         setPageNames(pages);
-      }
-      
-      setAuthCheckLoading(false);
-    })();
-  }, [businessId, searchParams]);
+      })();
+    }
+  }, [businessId]);
 
   const loadData = useCallback(async () => {
     if (!businessId) return;
@@ -199,7 +195,7 @@ function HomeContent() {
             <p className="text-zinc-400 text-sm font-medium">Monitoring digital visual strategies.</p>
           </div>
           <div className="flex items-center gap-3">
-            <select 
+            <select
               value={businessId || ''} 
               onChange={(e) => setBusinessId(e.target.value)}
               className="h-10 px-4 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold focus:ring-1 focus:ring-zinc-200 outline-none transition-all cursor-pointer"

@@ -196,142 +196,156 @@ export async function POST(req: Request) {
           }
         }
 
-        // ---- First, try to download and upload image ----
-        let imageUrl = null;
-        let imageUploadSuccess = false;
+        // ---- Download and upload media (videos + preview OR images) ----
         let storagePath: string | null = null;
+        let videoStoragePath: string | null = null;
+        let hasMedia = false;
+        const adminClient = createAdminClient(reqId);
 
-        // Priority 1: videos array - extract preview image
-        if (snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0) {
+        // Check if this is a VIDEO ad
+        const isVideo = snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0;
+
+        if (isVideo) {
+          console.log(`[${reqId}] 🎬 Processing VIDEO ad`);
           const video = snapshot.videos[0];
-          imageUrl = video.video_preview_image_url;
-          console.log(`[${reqId}] 🎬 Video preview URL:`, imageUrl ? "found" : "not found");
-        }
+          const videoUrl = video.video_hd_url || video.video_sd_url || video.url;
+          const previewUrl = video.video_preview_image_url;
 
-        // Priority 2: images array
-        if (!imageUrl && snapshot.images && Array.isArray(snapshot.images) && snapshot.images.length > 0) {
-          const imgData = snapshot.images[0];
-          // Handle both string URLs and objects with url/resized_image_url properties
-          if (typeof imgData === 'string') {
-            imageUrl = imgData;
-          } else if (imgData && typeof imgData === 'object') {
-            imageUrl = imgData.resized_image_url || imgData.url || imgData.image_url;
-            console.log(`[${reqId}] 🖼️ Image object structure:`, Object.keys(imgData));
-          }
-          console.log(`[${reqId}] 🖼️ Image URL from array:`, imageUrl ? "found" : "not found");
-        }
-
-        // Priority 3: cards array
-        if (!imageUrl && snapshot.cards && Array.isArray(snapshot.cards) && snapshot.cards.length > 0) {
-          const card = snapshot.cards[0];
-          if (typeof card === 'string') {
-            imageUrl = card;
-          } else if (card && typeof card === 'object') {
-            imageUrl = card.video_preview_image_url || card.resized_image_url || card.original_image_url || card.watermarked_resized_image_url || card.image_url || card.url;
-            console.log(`[${reqId}] 🃏 Card object structure:`, Object.keys(card));
-          }
-          console.log(`[${reqId}] 🃏 Image URL from cards:`, imageUrl ? "found" : "not found");
-        }
-
-        console.log(`[${reqId}] 📥 Image URL to download:`, imageUrl ? "yes" : "no");
-
-        if (imageUrl) {
-          try {
-            console.log(`[${reqId}] 🔽 Downloading image from:`, String(imageUrl).substring(0, 100) + "...");
-            const imgResponse = await fetch(imageUrl);
-
-            console.log(`[${reqId}] 📡 Image response status:`, imgResponse.status);
-            console.log(`[${reqId}] 📡 Response headers:`, {
-              contentType: imgResponse.headers.get('content-type'),
-              contentLength: imgResponse.headers.get('content-length'),
-              cacheControl: imgResponse.headers.get('cache-control')
-            });
-
-            if (!imgResponse.ok) {
-              console.log(`[${reqId}] ❌ Fetch failed with status ${imgResponse.status}`);
-              console.log(`[${reqId}] ❌ Status text:`, imgResponse.statusText);
-              const bodyText = await imgResponse.text().catch(() => 'could not read body');
-              console.log(`[${reqId}] ❌ Response body (first 500 chars):`, bodyText.substring(0, 500));
-            }
-
-            if (imgResponse.ok) {
-              const buffer = await imgResponse.arrayBuffer();
-              console.log(`[${reqId}] 📦 Image buffer size:`, buffer.byteLength, "bytes");
+          // 1. Download and upload VIDEO file
+          if (videoUrl) {
+            try {
+              console.log(`[${reqId}] 🔽 Downloading video from:`, String(videoUrl).substring(0, 100) + "...");
+              const videoResponse = await fetch(videoUrl);
               
-              if (buffer.byteLength === 0) {
-                console.log(`[${reqId}] ❌ Buffer is empty!`);
-              }
-              
-              // Determine format — prefer Content-Type header, fall back to URL extension
-              const contentTypeHeader = (imgResponse.headers.get('content-type') || '').toLowerCase();
-              let ext = 'jpg';
-              let uploadContentType = '';
+              if (videoResponse.ok) {
+                const videoBuffer = await videoResponse.arrayBuffer();
+                console.log(`[${reqId}] 📦 Video buffer size:`, videoBuffer.byteLength, "bytes");
 
-              if (contentTypeHeader.startsWith('image/')) {
-                const subtype = contentTypeHeader.split(';')[0].split('/')[1];
-                ext = subtype === 'jpeg' ? 'jpg' : subtype;
-                if (!["jpg", "png", "webp", "gif"].includes(ext)) ext = 'jpg';
-                uploadContentType = contentTypeHeader.split(';')[0];
-              } else {
-                const urlExt = new URL(imageUrl).pathname.split('.').pop()?.toLowerCase() || 'jpg';
-                ext = urlExt === 'jpeg' ? 'jpg' : urlExt;
-                if (!["jpg", "png", "webp", "gif"].includes(ext)) ext = 'jpg';
-                uploadContentType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
-              }
+                if (videoBuffer.byteLength > 0) {
+                  const videoExt = 'mp4';
+                  videoStoragePath = `${businessSlug}/${adArchiveId}.${videoExt}`;
+                  
+                  const { error: videoUploadErr } = await adminClient.storage
+                    .from("creatives")
+                    .upload(videoStoragePath, new Uint8Array(videoBuffer), { upsert: true, contentType: 'video/mp4' });
 
-              storagePath = `${businessSlug}/${adArchiveId}.${ext}`;
-              console.log(`[${reqId}] 📤 Uploading to:`, storagePath);
-              console.log(`[${reqId}] 📝 Content-type:`, uploadContentType);
-              
-              // Use admin client for storage (will throw error if not available)
-              const adminClient = createAdminClient(reqId);
-              
-              try {
-                console.log(`[${reqId}] 🚀 Starting upload to creatives bucket...`);
-                const { data: uploadData, error: uploadErr } = await adminClient.storage
-                  .from("creatives")
-                  .upload(storagePath, new Uint8Array(buffer), { upsert: true, contentType: uploadContentType });
-
-                if (uploadErr) {
-                  console.log(`[${reqId}] ❌ Upload failed - Code:`, uploadErr.code);
-                  console.log(`[${reqId}] ❌ Upload failed - Message:`, uploadErr.message);
-                  console.log(`[${reqId}] ❌ Upload failed - Full:`, JSON.stringify(uploadErr));
-                } else {
-                  console.log(`[${reqId}] ✅ Image uploaded successfully:`, storagePath);
-                  console.log(`[${reqId}] 📊 Upload response:`, uploadData);
-                  imageUploadSuccess = true;
+                  if (videoUploadErr) {
+                    console.log(`[${reqId}] ❌ Video upload failed:`, videoUploadErr.message);
+                  } else {
+                    console.log(`[${reqId}] ✅ Video uploaded:`, videoStoragePath);
+                    hasMedia = true;
+                  }
                 }
-              } catch (uploadCatchErr: any) {
-                console.log(`[${reqId}] ❌ Upload exception - Name:`, uploadCatchErr?.name);
-                console.log(`[${reqId}] ❌ Upload exception - Message:`, uploadCatchErr?.message);
-                console.log(`[${reqId}] ❌ Upload exception - Full:`, JSON.stringify(uploadCatchErr));
               }
-            } else {
-              console.log(`[${reqId}] ❌ Image fetch failed with status:`, imgResponse.status);
-              console.log(`[${reqId}] ❌ Image URL was:`, String(imageUrl).substring(0, 100) + "...");
+            } catch (videoErr: any) {
+              console.log(`[${reqId}] ❌ Video download error:`, videoErr?.message);
             }
-          } catch (imgErr: any) {
-            console.log(`[${reqId}] ❌ Image download exception for ${adArchiveId}`);
-            console.log(`[${reqId}] ❌ Exception type:`, imgErr?.constructor?.name);
-            console.log(`[${reqId}] ❌ Exception message:`, imgErr?.message);
-            console.log(`[${reqId}] ❌ Exception code:`, imgErr?.code);
-            console.log(`[${reqId}] ❌ Exception errno:`, imgErr?.errno);
-            console.log(`[${reqId}] ❌ Full exception:`, JSON.stringify(imgErr, null, 2));
+          }
+
+          // 2. Download and upload PREVIEW IMAGE
+          if (previewUrl) {
+            try {
+              console.log(`[${reqId}] 🔽 Downloading preview from:`, String(previewUrl).substring(0, 100) + "...");
+              const previewResponse = await fetch(previewUrl);
+              
+              if (previewResponse.ok) {
+                const previewBuffer = await previewResponse.arrayBuffer();
+                console.log(`[${reqId}] 📦 Preview buffer size:`, previewBuffer.byteLength, "bytes");
+
+                if (previewBuffer.byteLength > 0) {
+                  const contentType = previewResponse.headers.get('content-type') || 'image/jpeg';
+                  let ext = 'jpg';
+                  if (contentType.includes('png')) ext = 'png';
+                  else if (contentType.includes('webp')) ext = 'webp';
+                  
+                  storagePath = `${businessSlug}/${adArchiveId}_preview.${ext}`;
+                  
+                  const { error: previewUploadErr } = await adminClient.storage
+                    .from("creatives")
+                    .upload(storagePath, new Uint8Array(previewBuffer), { upsert: true, contentType });
+
+                  if (previewUploadErr) {
+                    console.log(`[${reqId}] ❌ Preview upload failed:`, previewUploadErr.message);
+                  } else {
+                    console.log(`[${reqId}] ✅ Preview uploaded:`, storagePath);
+                    hasMedia = true;
+                  }
+                }
+              }
+            } catch (previewErr: any) {
+              console.log(`[${reqId}] ❌ Preview download error:`, previewErr?.message);
+            }
           }
         } else {
-          // No image URL found
-          console.log(`[${reqId}] ❌ No image URL found for ${adArchiveId}`);
+          // This is an IMAGE ad
+          console.log(`[${reqId}] 🖼️ Processing IMAGE ad`);
+          let imageUrl = null;
+
+          // Priority 1: images array
+          if (snapshot.images && Array.isArray(snapshot.images) && snapshot.images.length > 0) {
+            const imgData = snapshot.images[0];
+            if (typeof imgData === 'string') {
+              imageUrl = imgData;
+            } else if (imgData && typeof imgData === 'object') {
+              imageUrl = imgData.resized_image_url || imgData.url || imgData.image_url;
+            }
+          }
+
+          // Priority 2: cards array
+          if (!imageUrl && snapshot.cards && Array.isArray(snapshot.cards) && snapshot.cards.length > 0) {
+            const card = snapshot.cards[0];
+            if (typeof card === 'string') {
+              imageUrl = card;
+            } else if (card && typeof card === 'object') {
+              imageUrl = card.resized_image_url || card.original_image_url || card.image_url || card.url;
+            }
+          }
+
+          if (imageUrl) {
+            try {
+              console.log(`[${reqId}] 🔽 Downloading image from:`, String(imageUrl).substring(0, 100) + "...");
+              const imgResponse = await fetch(imageUrl);
+              
+              if (imgResponse.ok) {
+                const imgBuffer = await imgResponse.arrayBuffer();
+                console.log(`[${reqId}] 📦 Image buffer size:`, imgBuffer.byteLength, "bytes");
+
+                if (imgBuffer.byteLength > 0) {
+                  const contentType = imgResponse.headers.get('content-type') || 'image/jpeg';
+                  let ext = 'jpg';
+                  if (contentType.includes('png')) ext = 'png';
+                  else if (contentType.includes('webp')) ext = 'webp';
+                  else if (contentType.includes('gif')) ext = 'gif';
+                  
+                  storagePath = `${businessSlug}/${adArchiveId}.${ext}`;
+                  
+                  const { error: imgUploadErr } = await adminClient.storage
+                    .from("creatives")
+                    .upload(storagePath, new Uint8Array(imgBuffer), { upsert: true, contentType });
+
+                  if (imgUploadErr) {
+                    console.log(`[${reqId}] ❌ Image upload failed:`, imgUploadErr.message);
+                  } else {
+                    console.log(`[${reqId}] ✅ Image uploaded:`, storagePath);
+                    hasMedia = true;
+                  }
+                }
+              }
+            } catch (imgErr: any) {
+              console.log(`[${reqId}] ❌ Image download error:`, imgErr?.message);
+            }
+          }
         }
 
-        // Only save ad if image was uploaded successfully
-        if (!imageUploadSuccess) {
-          console.log(`[${reqId}] ❌ Skipping ad ${adArchiveId} - image upload failed or no image`);
-          errors.push({ ad_archive_id: adArchiveId, reason: "no_image_uploaded" });
+        // Only save ad if we uploaded at least some media
+        if (!hasMedia) {
+          console.log(`[${reqId}] ❌ Skipping ad ${adArchiveId} - no media uploaded`);
+          errors.push({ ad_archive_id: adArchiveId, reason: "no_media_uploaded" });
           continue;
         }
 
         // ---- Save ad to database ----
-        const adData = {
+        const adData: any = {
           business_id: businessId,
           ad_archive_id: adArchiveId,
           page_name: snapshot.page_name || "",
@@ -340,11 +354,7 @@ export async function POST(req: Request) {
           caption: snapshot.caption || null,
           url: snapshot.link_url || snapshot.url || null,
           competitor_niche: null,
-          display_format:
-            snapshot.display_format?.toUpperCase?.() === "VIDEO" ||
-            snapshot.videos?.length > 0
-              ? "VIDEO"
-              : "IMAGE",
+          display_format: isVideo ? "VIDEO" : "IMAGE",
           start_date_formatted: item.start_date_formatted || null,
           end_date_formatted: item.end_date_formatted || null,
           cards_json: snapshot.cards ? JSON.stringify(snapshot.cards) : null,
@@ -353,6 +363,10 @@ export async function POST(req: Request) {
           vector_group: null,
           duplicates_count: 0,
         };
+        
+        if (videoStoragePath) {
+          adData.video_storage_path = videoStoragePath;
+        }
 
         // Upsert the ad
         let insertErr = null;
