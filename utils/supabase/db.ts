@@ -397,11 +397,11 @@ export function getEffectiveTitle(title: string | null | undefined, cardsJson: s
  */
 export async function fetchDuplicatesStats(businessId: string, pageName?: string, niche?: string, opts?: { startDate?: string; endDate?: string; displayFormat?: string }) {
   try {
-    // Best-effort: use groups status view which contains items count per group
-    let q = supabase.from(ADS_GROUPS_STATUS_VIEW).select('items').eq('business_id', businessId);
+    // Use ads_groups_test table directly to get all groups
+    let q = supabase.from(ADS_GROUPS_TABLE).select('items').eq('business_id', businessId);
     const { data, error } = await q;
     if (error || !data) return { min: 0, max: 0 };
-    const duplicates = data.map((r: any) => Number(r.items || 0) - 1);
+    const duplicates = data.map((r: any) => Number(r.items || 0) - 1).filter(d => d >= 0);
     const min = duplicates.length ? Math.min(...duplicates) : 0;
     const max = duplicates.length ? Math.max(...duplicates) : 0;
     return { min, max };

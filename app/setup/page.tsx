@@ -25,6 +25,7 @@ export default function SetupPage() {
   const [selectedBusinessId, setSelectedBusinessId] = useState<string | null>(null);
   const [businessesLoading, setBusinessesLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [ownedBusinessIds, setOwnedBusinessIds] = useState<string[]>([]);
   const [logs, setLogs] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string; timestamp: Date }>>([]);
 
   useEffect(() => {
@@ -40,6 +41,11 @@ export default function SetupPage() {
           const typedBiz = userBusinesses as Business[];
           setBusinesses(typedBiz);
           setSelectedBusinessId(typedBiz[0].id);
+          // Track which businesses user owns (owner_id === userId)
+          const ownedIds = typedBiz
+            .filter(b => b.owner_id === userId)
+            .map(b => b.id);
+          setOwnedBusinessIds(ownedIds);
         }
       }
       setBusinessesLoading(false);
@@ -47,7 +53,22 @@ export default function SetupPage() {
     initUser();
   }, [supabase]);
 
-  const nonEmptyUrls = useMemo(() => rows.map(r => r.url.trim()).filter(Boolean), [rows]);
+  // Determine if user can setup the selected business
+  const canSetupSelected = useMemo(() => {
+    if (!selectedBusinessId) return false;
+    // Owner can setup their own business
+    if (ownedBusinessIds.includes(selectedBusinessId)) return true;
+    // Admin can setup any business
+    if (isAdmin) return true;
+    // Regular user cannot setup
+    return false;
+  }, [selectedBusinessId, ownedBusinessIds, isAdmin]);
+
+  // Check if business is owned by current user
+  const isOwnedBusiness = (bizId: string) => ownedBusinessIds.includes(bizId);
+
+  // Check if business is accessible to admin but not owned
+  const isAdminAccessOnly = (bizId: string) => isAdmin && !isOwnedBusiness(bizId);
 
   const isLikelyMetaAds = useCallback((u: string) => {
     try {
@@ -75,9 +96,19 @@ export default function SetupPage() {
     } catch { addLog('error', '❌ Clipboard access denied'); }
   };
 
+  const nonEmptyUrls = useMemo(() => rows.map(r => r.url.trim()).filter(Boolean), [rows]);
+
   const onSend = async () => {
     setError(null); setSuccessMsg(null);
     if (!nonEmptyUrls.length || !selectedBusinessId) return;
+    
+    // Check permission
+    if (!canSetupSelected) {
+      setError('You do not have permission to setup this business. Only the owner or admins can setup.');
+      addLog('error', '❌ Access denied - insufficient permissions for this business');
+      return;
+    }
+    
     setSending(true);
     addLog('info', `🚀 Starting scrape for ${nonEmptyUrls.length} links...`);
     
@@ -136,8 +167,34 @@ export default function SetupPage() {
                     onChange={(e) => setSelectedBusinessId(e.target.value)}
                     className="w-full h-11 px-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all cursor-pointer"
                   >
-                    {businesses.map(b => <option key={b.id} value={b.id}>{b.name || b.slug}</option>)}
+                    <option value="">Choose a business...</option>
+                    {businesses.map(b => (
+                      <option key={b.id} value={b.id}>
+                        {b.name || b.slug}
+                        {isOwnedBusiness(b.id) ? ' (Owner)' : ''}
+                        {isAdminAccessOnly(b.id) ? ' (Admin)' : ''}
+                      </option>
+                    ))}
                   </select>
+                  
+                  {/* Access Info */}
+                  {selectedBusinessId && (
+                    <div className={`mt-2 p-3 rounded-lg text-sm ${
+                      canSetupSelected
+                        ? 'bg-green-50 text-green-800 border border-green-200'
+                        : 'bg-red-50 text-red-800 border border-red-200'
+                    }`}>
+                      {isOwnedBusiness(selectedBusinessId) && (
+                        <span>✓ You own this business</span>
+                      )}
+                      {isAdminAccessOnly(selectedBusinessId) && (
+                        <span>✓ Admin access enabled</span>
+                      )}
+                      {!canSetupSelected && (
+                        <span>✗ No setup permission for this business</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </section>
@@ -204,15 +261,26 @@ export default function SetupPage() {
             </section>
 
             {/* Action Footer */}
-            <div className="flex items-center justify-between pt-4">
-               <p className="text-xs text-slate-400 font-medium italic">All data will be automatically categorized by selected business.</p>
-               <button 
-                onClick={onSend}
-                disabled={sending || !nonEmptyUrls.length}
-                className="px-10 py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm shadow-xl shadow-indigo-100 hover:bg-indigo-700 disabled:bg-slate-300 disabled:shadow-none transition-all transform hover:-translate-y-1 active:translate-y-0"
-               >
-                 {sending ? 'Scraping in progress...' : '🚀 Start Apify Agent'}
-               </button>
+            <div className="space-y-3">
+              {!canSetupSelected && selectedBusinessId && (
+                <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+                  <span>⚠️ You don&apos;t have permission to setup this business. Only the owner or admins can proceed.</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between pt-4">
+                <p className="text-xs text-slate-400 font-medium italic">All data will be automatically categorized by selected business.</p>
+                <button 
+                  onClick={onSend}
+                  disabled={!canSetupSelected || sending || !nonEmptyUrls.length}
+                  className={`px-10 py-4 rounded-2xl font-bold text-sm shadow-xl transition-all transform ${
+                    !canSetupSelected
+                      ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:-translate-y-1 active:translate-y-0 shadow-indigo-100'
+                  } disabled:hover:-translate-y-0`}
+                >
+                  {sending ? 'Scraping in progress...' : '🚀 Start Apify Agent'}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -256,7 +324,18 @@ export default function SetupPage() {
 
             {/* Info Box */}
             <div className="bg-white rounded-2xl border border-slate-200 p-5">
-              <h3 className="text-sm font-bold mb-3 flex items-center gap-2">ℹ️ Usage Tips</h3>
+              <h3 className="text-sm font-bold mb-3 flex items-center gap-2">ℹ️ Access & Permissions</h3>
+              <ul className="text-xs text-slate-500 space-y-3 mb-4">
+                <li className="flex gap-2"><span>👤</span> <span><strong>Owner:</strong> Can setup only their own businesses</span></li>
+                <li className="flex gap-2"><span>👑</span> <span><strong>Admin:</strong> Can setup all businesses (owned + access)</span></li>
+                <li className="flex gap-2"><span>👁️</span> <span><strong>User:</strong> View only</span></li>
+              </ul>
+              {isAdmin && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 mb-3">
+                  ✓ You are an admin with full setup access to all businesses
+                </div>
+              )}
+              <h3 className="text-sm font-bold mb-3 flex items-center gap-2 mt-4">🔗 How to Use</h3>
               <ul className="text-xs text-slate-500 space-y-3">
                 <li className="flex gap-2"><span>•</span> <span>Paste URLs directly from the Facebook Ads Library search results.</span></li>
                 <li className="flex gap-2"><span>•</span> <span>Admins can bypass JSON limits using the Upload button in the gallery.</span></li>

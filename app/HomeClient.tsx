@@ -13,6 +13,7 @@ import { Slider } from '@mui/material';
 import dayjs from 'dayjs';
 
 import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/utils/supabase/db';
+import { isUserAdmin } from '@/utils/supabase/admin';
 import type { Ad } from '@/lib/types';
 import { AdCard } from '@/components/AdCard';
 import { ViewToggle } from '@/components/ViewToggle';
@@ -42,6 +43,9 @@ function HomeContent(): JSX.Element {
   const [totalPages, setTotalPages] = useState(1);
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [businesses, setBusinesses] = useState<any[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [ownedBusinessIds, setOwnedBusinessIds] = useState<string[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
 
   // Filters
   const [selectedPage, setSelectedPage] = useState('');
@@ -90,13 +94,30 @@ function HomeContent(): JSX.Element {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setAuthCheckLoading(false); return; }
 
+      setUserId(user.id);
+      const adminStatus = await isUserAdmin(user.id);
+      setIsAdmin(adminStatus);
+
+      // Load all businesses
       const { data: biz } = await supabase.from('businesses').select('*');
       const bData = biz || [];
       setBusinesses(bData);
+
+      // Track which businesses user owns
+      const ownedIds = bData
+        .filter(b => b.owner_id === user.id)
+        .map(b => b.id);
+      setOwnedBusinessIds(ownedIds);
       
       // Initialize all filters from URL
       const urlBusinessId = searchParams.get('businessId');
       const initialBusinessId = urlBusinessId || (bData.length > 0 ? bData[0].id : null);
+      
+      // If no business selected, redirect to choose-business page
+      if (!initialBusinessId) {
+        router.replace('/choose-business');
+        return;
+      }
       
       if (initialBusinessId) {
         setBusinessId(initialBusinessId);
@@ -142,7 +163,7 @@ function HomeContent(): JSX.Element {
       initialized.current = true;
       setAuthCheckLoading(false);
     })();
-  }, []); // Only on mount
+  }, [router, searchParams]); // Include router and searchParams
 
   // Update URL when filters change (after initialization)
   useEffect(() => {
@@ -202,6 +223,10 @@ function HomeContent(): JSX.Element {
 
   useEffect(() => { if (businessId) loadData(); }, [loadData, businessId]);
 
+  // Helper functions to check business permissions
+  const isOwnedBusiness = (bizId: string) => ownedBusinessIds.includes(bizId);
+  const canEditBusiness = (bizId: string) => isAdmin || isOwnedBusiness(bizId);
+
   if (authCheckLoading) return (
     <div className="min-h-screen flex items-center justify-center bg-white">
       <div className="w-4 h-4 border-2 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
@@ -228,10 +253,23 @@ function HomeContent(): JSX.Element {
           <div className="flex items-center gap-3">
             <select
               value={businessId || ''} 
-              onChange={(e) => setBusinessId(e.target.value)}
+              onChange={(e) => {
+                const newBizId = e.target.value;
+                if (canEditBusiness(newBizId)) {
+                  setBusinessId(newBizId);
+                } else {
+                  alert('You can only view this business. Contact owner or admin for edit access.');
+                }
+              }}
               className="h-10 px-4 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold focus:ring-1 focus:ring-zinc-200 outline-none transition-all cursor-pointer"
             >
-              {businesses.map(b => <option key={b.id} value={b.id}>{b.name || b.slug}</option>)}
+              {businesses.map(b => {
+                const owned = isOwnedBusiness(b.id);
+                const canEdit = canEditBusiness(b.id);
+                const label = owned ? ` ${b.name || b.slug} (Owner)` : (isAdmin && !owned ? ` ${b.name || b.slug} (Admin)` : ` ${b.name || b.slug}`);
+                const suffix = canEdit ? '' : ' (Viewable Only)';
+                return <option key={b.id} value={b.id}>{label}{suffix}</option>;
+              })}
             </select>
             <Link href={`/setup?returnTo=${encodeURIComponent(`/?${buildQueryString({ businessId: businessId || undefined, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, duplicatesRange })}`)}`} className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm">
               Import

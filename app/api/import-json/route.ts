@@ -358,6 +358,7 @@ export async function POST(req: Request) {
           start_date_formatted: item.start_date_formatted || null,
           end_date_formatted: item.end_date_formatted || null,
           cards_json: snapshot.cards ? JSON.stringify(snapshot.cards) : null,
+          creative_json_full: JSON.stringify(item),
           storage_path: storagePath,
           created_at: new Date().toISOString(),
           vector_group: null,

@@ -98,11 +98,12 @@ function AuthPageContent() {
         if (error) {
           setError(error.message)
         } else if (data?.user) {
-          setError('Check your email to confirm your account!')
-          setTimeout(() => {
-            setIsSignUp(false)
-            setError(null)
-          }, 3000)
+          // Automatically switch to login form after successful signup
+          setIsSignUp(false)
+          setError(null)
+          setEmail('')
+          setPassword('')
+          setName('')
         }
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password })
@@ -110,9 +111,9 @@ function AuthPageContent() {
         if (error) {
           setError(error.message)
         } else {
-          // Redirect to returnTo URL or home after successful login
+          // Redirect to business chooser after successful login
           const returnTo = searchParams.get('returnTo')
-          router.push(returnTo || '/')
+          router.push(returnTo || '/choose-business')
         }
       }
     } catch (err) {
