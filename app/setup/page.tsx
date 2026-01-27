@@ -16,7 +16,7 @@ export default function SetupPage() {
   const returnTo = searchParams.get('returnTo') || '/';
   const supabase = createClient();
   const [userId, setUserId] = useState<string | null>(null);
-  const [rows, setRows] = useState<LinkRow[]>([{ id: uid(), url: '', maxAds: 50 }]);
+  const [rows, setRows] = useState<LinkRow[]>([{ id: uid(), url: '', maxAds: 100 }]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -243,7 +243,7 @@ export default function SetupPage() {
                             type="number"
                             min={1}
                             max={100}
-                            value={row.maxAds}
+                            value={row.maxAds ?? 100}
                             onChange={(e) => updateRowMax(row.id, Number(e.target.value))}
                             className="w-full px-3 py-2 text-sm bg-transparent border border-slate-200 rounded-lg outline-none focus:border-indigo-300 focus:bg-white transition-all"
                           />

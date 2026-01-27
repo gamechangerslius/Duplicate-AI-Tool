@@ -52,7 +52,8 @@ function HomeContent(): JSX.Element {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [aiDescription, setAiDescription] = useState('');
-  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc' | 'end_date_asc' | 'end_date_desc'>('newest');
+  type SortByType = 'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc' | undefined;
+  const [sortBy, setSortBy] = useState<SortByType>('newest');
   const [duplicatesRange, setDuplicatesRange] = useState<[number, number]>([0, 100]);
   const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({ min: 0, max: 100 });
   
@@ -66,7 +67,7 @@ function HomeContent(): JSX.Element {
     startDate?: string;
     endDate?: string;
     aiDescription?: string;
-    sortBy?: string;
+    sortBy?: SortByType;
     currentPage?: number;
     businessId?: string;
     duplicatesRange?: [number, number];
@@ -126,18 +127,6 @@ function HomeContent(): JSX.Element {
         // Fetch duplicates stats for slider range
         const stats = await fetchDuplicatesStats(initialBusinessId);
         setDuplicatesStats(stats);
-        
-        // Initialize duplicates range from URL
-        const minDuplicatesParam = searchParams.get('minDuplicates');
-        const maxDuplicatesParam = searchParams.get('maxDuplicates');
-        if (minDuplicatesParam || maxDuplicatesParam) {
-          const min = minDuplicatesParam ? parseInt(minDuplicatesParam) : stats.min;
-          const max = maxDuplicatesParam ? parseInt(maxDuplicatesParam) : stats.max;
-          setDuplicatesRange([min, max]);
-        } else {
-          setDuplicatesRange([stats.min, stats.max]);
-        }
-        
         setPageNames(pages);
       }
       
@@ -157,8 +146,10 @@ function HomeContent(): JSX.Element {
       const aiDescriptionParam = searchParams.get('aiDescription');
       if (aiDescriptionParam) setAiDescription(aiDescriptionParam);
       
-      const sortByParam = searchParams.get('sortBy') as any;
-      if (sortByParam) setSortBy(sortByParam);
+      const sortByParam = searchParams.get('sortBy');
+      if (sortByParam === 'newest' || sortByParam === 'oldest' || sortByParam === 'start_date_asc' || sortByParam === 'start_date_desc') {
+        setSortBy(sortByParam);
+      }
       
       initialized.current = true;
       setAuthCheckLoading(false);
@@ -207,9 +198,9 @@ function HomeContent(): JSX.Element {
       max: duplicatesRange[1]
     } : undefined;
     const { ads: data, total } = await fetchAds({
-      businessId, 
+      businessId,
       pageName: selectedPage || undefined,
-      startDate: startDate || undefined, 
+      startDate: startDate || undefined,
       endDate: endDate || undefined,
       displayFormat: displayFormat === 'ALL' ? undefined : displayFormat,
       aiDescription: aiDescription || undefined,
