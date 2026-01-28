@@ -1,6 +1,18 @@
 "use client";
 
-import { useCallback, useMemo, useState, useEffect } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
+// SSE log hook
+function useSSELogs(taskId: string | null, onLog: (msg: string) => void) {
+  useEffect(() => {
+    if (!taskId) return;
+    const evtSource = new EventSource(`/api/import-json/logs/${taskId}`);
+    evtSource.onmessage = (event) => {
+      onLog(event.data);
+    };
+    return () => evtSource.close();
+  }, [taskId, onLog]);
+}
+import React from "react";
 import { createClient } from '@/utils/supabase/client';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { isUserAdmin, getUserBusinesses } from '@/utils/supabase/admin';
@@ -18,6 +30,10 @@ export default function SetupPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [rows, setRows] = useState<LinkRow[]>([{ id: uid(), url: '', maxAds: 100 }]);
   const [sending, setSending] = useState(false);
+  const [importStopped, setImportStopped] = useState(false);
+  const [maxAdsGlobal, setMaxAdsGlobal] = useState(100);
+  const [jsonConfirm, setJsonConfirm] = useState<{ items: any[]; fileName: string }|null>(null);
+  const [importTaskId, setImportTaskId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   
@@ -77,10 +93,98 @@ export default function SetupPage() {
     } catch { return false; }
   }, []);
 
-  const addRow = () => setRows(rs => [...rs, { id: uid(), url: '', maxAds: 50 }]);
+
+
+  const addRow = () => setRows(rs => [...rs, { id: uid(), url: '', maxAds: maxAdsGlobal }]);
   const removeRow = (id: string) => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== id) : rs));
   const updateRow = (id: string, url: string) => setRows(rs => rs.map(x => (x.id === id ? { ...x, url } : x)));
   const updateRowMax = (id: string, maxAds: number) => setRows(rs => rs.map(x => (x.id === id ? { ...x, maxAds } : x)));
+  // Массовое изменение maxAds
+  const updateAllMaxAds = (val: number) => setRows(rs => rs.map(x => ({ ...x, maxAds: val })));
+
+  // JSON upload handler (import-json API with confirm)
+  const handleJsonUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    addLog('info', '📁 Reading JSON file...');
+    const file = e.target.files?.[0];
+    if (!file || !selectedBusinessId) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        addLog('info', '🔍 Parsing JSON...');
+        const json = JSON.parse(event.target?.result as string);
+        if (!Array.isArray(json) || !json.length) {
+          addLog('error', '❌ JSON must be a non-empty array');
+          return;
+        }
+        addLog('info', `✅ JSON parsed. Found ${json.length} creatives. Awaiting confirmation...`);
+        setJsonConfirm({ items: json, fileName: file.name });
+      } catch {
+        addLog('error', '❌ Failed to parse JSON');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  // Подтверждение импорта JSON
+  const confirmJsonImport = async () => {
+    if (!jsonConfirm || !selectedBusinessId) return;
+    setSending(true);
+    setImportStopped(false);
+    setJsonConfirm(null);
+    // Генерируем taskId (можно заменить на uuid или серверный id)
+    const taskId = `task_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    setImportTaskId(taskId);
+    const items = jsonConfirm.items.slice(0, maxAdsGlobal);
+    addLog('info', `⏳ Sending ${items.length} creatives to server for import (taskId: ${taskId})...`);
+    try {
+      const res = await fetch('/api/import-json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, businessId: selectedBusinessId, maxAds: maxAdsGlobal, taskId })
+      });
+      if (res.ok) {
+        addLog('success', '✅ Import complete! Creatives are being processed and will appear in the gallery soon.');
+        setSuccessMsg('JSON imported to DB. Creatives will appear after processing.');
+      } else {
+        const err = await res.json();
+        addLog('error', `❌ Import failed: ${err.message || res.status}`);
+        setError(err.message || 'Import failed');
+      }
+    } catch (e) {
+      addLog('error', `❌ Import failed: ${(e && typeof e === 'object' && 'message' in e) ? e.message : String(e)}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // Stop import handler
+  const stopImport = async () => {
+    if (!importTaskId) return;
+    setImportStopped(true);
+    setSending(false);
+    addLog('info', '⏹️ Sending stop request...');
+    try {
+      await fetch('/api/import-json/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: importTaskId })
+      });
+      addLog('info', '⏹️ Import stop requested. The process will halt soon.');
+    } catch (e) {
+      addLog('error', '❌ Failed to send stop request');
+    }
+  };
+  // Подписка на SSE логи по importTaskId
+  useSSELogs(importTaskId, (msg) => {
+    if (msg.includes('⏹️ Import cancelled by user.')) {
+      setImportStopped(true);
+      setSending(false);
+      addLog('info', msg);
+    } else {
+      addLog('info', msg);
+    }
+  });
 
   const addLog = (type: 'success' | 'error' | 'info', message: string) => {
     setLogs(prev => [{ id: uid(), type, message, timestamp: new Date() }, ...prev].slice(0, 20));
@@ -126,8 +230,9 @@ export default function SetupPage() {
       addLog('success', '✅ Data sent to Apify successfully');
       setSuccessMsg('Task started!');
     } catch (e: any) {
-      addLog('error', `❌ Error: ${e.message}`);
-      setError(e.message);
+      const msg = (e && typeof e === 'object' && 'message' in e) ? e.message : String(e);
+      addLog('error', `❌ Error: ${msg}`);
+      setError(msg);
     } finally { setSending(false); }
   };
 
@@ -203,13 +308,51 @@ export default function SetupPage() {
             <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden transition-all hover:shadow-md">
               <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                 <h2 className="text-lg font-bold flex items-center gap-2">🔗 Source Links</h2>
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="number"
+                    min={1}
+                    max={9999}
+                    value={maxAdsGlobal}
+                    onChange={e => {
+                      const val = Math.max(1, Math.min(9999, Number(e.target.value)));
+                      setMaxAdsGlobal(val);
+                      updateAllMaxAds(val);
+                    }}
+                    className="w-24 px-2 py-2 text-xs border border-slate-200 rounded-lg outline-none focus:border-indigo-300 focus:bg-white transition-all mr-2"
+                    placeholder="Max creatives"
+                  />
+                        {/* JSON Import Confirmation Modal */}
+                        {jsonConfirm && (
+                          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+                            <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full border border-slate-100 animate-in fade-in slide-in-from-top-8">
+                              <div className="flex items-center gap-3 mb-6">
+                                <div className="p-2 bg-indigo-500 rounded-lg text-white text-xl shadow-lg"><svg width="24" height="24" fill="none" viewBox="0 0 24 24"><path d="M12 3v14m0 0l-4-4m4 4l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><rect x="3" y="17" width="18" height="4" rx="2" fill="#6366f1" opacity=".1"/></svg></div>
+                                <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">Confirm JSON Import</h2>
+                              </div>
+                              <div className="space-y-3 text-base text-slate-700">
+                                <div className="break-all"><span className="font-semibold text-slate-500">File:</span> <span className="font-mono text-indigo-700 break-all inline-block max-w-full align-middle">{jsonConfirm.fileName}</span></div>
+                                <div><span className="font-semibold text-slate-500">Total creatives in file:</span> <span className="font-bold text-slate-900">{jsonConfirm.items.length}</span></div>
+                                <div><span className="font-semibold text-slate-500">Will be imported:</span> <span className="font-bold text-indigo-600">{Math.min(jsonConfirm.items.length, maxAdsGlobal)}</span></div>
+                                <div className="break-all"><span className="font-semibold text-slate-500">Business:</span> <span className="font-bold text-slate-900 break-all inline-block max-w-full align-middle">{businesses.find(b => b.id === selectedBusinessId)?.name || selectedBusinessId}</span></div>
+                              </div>
+                              <div className="flex gap-4 mt-8 justify-end">
+                                <button onClick={() => setJsonConfirm(null)} className="px-5 py-2.5 rounded-xl bg-slate-100 text-slate-600 font-bold hover:bg-slate-200 border border-slate-200 shadow-sm transition-all">Cancel</button>
+                                <button onClick={confirmJsonImport} className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 shadow-lg transition-all" disabled={sending || importStopped}>Import</button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                   <button onClick={handlePasteBulk} className="px-4 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm">
                     Paste Clipboard
                   </button>
                   <button onClick={addRow} className="px-4 py-2 text-xs font-bold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">
                     + Add New
                   </button>
+                  <label className="px-4 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm cursor-pointer">
+                    Upload JSON
+                    <input type="file" accept="application/json" onChange={handleJsonUpload} className="hidden" />
+                  </label>
                 </div>
               </div>
 
@@ -293,9 +436,25 @@ export default function SetupPage() {
                   <span className="text-xl">{error ? '⚠️' : '✅'}</span>
                   <p className="text-sm font-bold">{error || successMsg}</p>
                 </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {sending && 'Uploading and processing creatives. Please wait...'}
+                  {!sending && !error && 'You can monitor progress in the Activity Monitor below.'}
+                </div>
               </div>
             )}
 
+            {/* Stop Import Button (always visible during import) */}
+            {importTaskId && (
+              <div className="mb-4 flex justify-end">
+                <button
+                  onClick={stopImport}
+                  className={`px-6 py-3 rounded-2xl font-extrabold text-lg bg-gradient-to-r from-red-600 to-pink-600 text-white shadow-2xl border-2 border-red-700 animate-pulse transition-all duration-200 hover:from-red-700 hover:to-pink-700 focus:ring-4 focus:ring-red-300 ${importStopped ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  disabled={importStopped}
+                >
+                  ⏹️ Stop import 
+                </button>
+              </div>
+            )}
             {/* Terminal Logs */}
             <section className="bg-[#0f172a] rounded-2xl shadow-2xl overflow-hidden border border-slate-800">
               <div className="px-4 py-3 bg-[#1e293b] border-b border-slate-800 flex items-center justify-between">
@@ -305,10 +464,13 @@ export default function SetupPage() {
                   <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/50"></div>
                 </div>
                 <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest font-bold">Activity Monitor</span>
+                {importStopped && (
+                  <span className="ml-4 px-3 py-1.5 rounded-lg bg-slate-400 text-white text-xs font-bold">Stopped</span>
+                )}
               </div>
               <div className="p-5 h-[400px] overflow-y-auto font-mono text-[11px] leading-relaxed">
                 {logs.length === 0 ? (
-                  <div className="text-slate-600 italic">Listening for system events...</div>
+                  <div className="text-slate-600 italic">Waiting for actions...<br/>All important steps and errors will be shown here in real time.</div>
                 ) : (
                   logs.map((log) => (
                     <div key={log.id} className="mb-2 flex gap-3 animate-in fade-in slide-in-from-left-2">

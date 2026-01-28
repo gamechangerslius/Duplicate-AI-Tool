@@ -1,3 +1,5 @@
+"use client";
+
 import { type Ad } from '@/lib/types';
 import Image from 'next/image';
 
@@ -10,6 +12,10 @@ export function AdCard({ ad }: AdCardProps) {
   const imageUrl = ad.image_url || '';
   const isNewGroup = !!ad.group_created_at && (Date.now() - new Date(ad.group_created_at).getTime() <= 24 * 60 * 60 * 1000);
   const newCount = ad.new_count || 0;
+
+  // Items should be provided by parent; display ad.items directly.
+  const itemsCount = typeof ad.items === 'number' ? ad.items : null;
+  const loadingItems = false;
 
   return (
     <div className="group bg-white rounded-2xl border border-zinc-100 transition-all duration-500 hover:shadow-2xl hover:shadow-zinc-200/50 hover:-translate-y-1 overflow-hidden cursor-pointer h-full flex flex-col">
@@ -38,9 +44,9 @@ export function AdCard({ ad }: AdCardProps) {
                 New +{newCount}
               </div>
             )}
-            {ad.duplicates_count && ad.duplicates_count > 0 && (
+            {(itemsCount || itemsCount === 0) && (
               <div className="bg-white/90 backdrop-blur-md border border-zinc-200 text-zinc-900 text-[9px] px-2 py-1 rounded-full font-bold uppercase tracking-tighter shadow-sm">
-                {ad.duplicates_count} Duplicates
+                {`${itemsCount} Duplicates`}
               </div>
             )}
           </div>
@@ -66,16 +72,7 @@ export function AdCard({ ad }: AdCardProps) {
 
       {/* Info Section */}
       <div className="p-4 flex-1 flex flex-col gap-3">
-        <div>
-          <div className="flex items-center gap-2 mb-1.5">
-            <span className="text-[9px] font-black text-zinc-400 uppercase tracking-[0.2em] truncate">
-              {ad.page_name}
-            </span>
-          </div>
-          <h3 className="font-bold text-zinc-900 text-xs leading-snug line-clamp-2 group-hover:text-indigo-600 transition-colors">
-            {ad.title || 'Untitled Campaign'}
-          </h3>
-        </div>
+
 
         {ad.competitor_niche && (
           <div className="flex items-center gap-1.5">

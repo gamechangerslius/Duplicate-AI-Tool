@@ -18,10 +18,13 @@ export interface Ad {
   group_created_at?: string | null;
   new_count?: number;
   duplicates_count?: number;
+  items?: number; // total items count from ads_groups_test
+  group_items?: number; // raw `items` value from ads_groups_test table
   status?: 'New' | 'Scaling' | 'Inactive';
   diff_count?: number | null;
   meta_ad_url?: string;
   ai_description?: string;
+  concept?: string;
   raw?: Record<string, any>;
 }
 

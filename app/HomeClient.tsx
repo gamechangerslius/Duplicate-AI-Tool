@@ -207,12 +207,49 @@ function HomeContent(): JSX.Element {
       sortBy: sortBy || undefined,
       duplicatesRange: duplicatesFilter
     }, { page: currentPage, perPage: PER_PAGE });
-    setAds(data);
+    // Batch-fetch authoritative items counts for the page's vector_groups
+    try {
+      const supabase = createClient();
+      const vectorGroups = Array.from(new Set(data.map(a => String(a.vector_group)).filter(v => v !== 'null' && v !== 'undefined' && v !== '-1' && v !== '')));
+      if (vectorGroups.length > 0) {
+        const { data: rows } = await supabase
+          .from('ads')
+          .select('vector_group')
+          .in('vector_group', vectorGroups as any)
+          .eq('business_id', businessId);
+
+        const countsMap = new Map<string, number>();
+        (rows || []).forEach((r: any) => {
+          const vg = String(r.vector_group);
+          countsMap.set(vg, (countsMap.get(vg) || 0) + 1);
+        });
+
+        const merged = data.map(a => ({
+          ...a,
+          items: typeof a.items === 'number' ? a.items : (a.vector_group ? (countsMap.get(String(a.vector_group)) ?? a.items) : a.items)
+        }));
+
+        setAds(merged);
+
+        // Debug log for problematic group/ad
+        const sample = merged.find(m => String(m.vector_group) === '28120828146817396' || m.ad_archive_id === '1001469877987489');
+        if (sample) console.log('HomeClient: sample merged ad for debug', sample, { countsMapSample: countsMap.get('28120828146817396') });
+      } else {
+        setAds(data);
+      }
+    } catch (err) {
+      console.error('HomeClient: failed to batch-fetch group counts', err);
+      setAds(data);
+    }
     setTotalPages(Math.ceil(total / PER_PAGE));
     setLoading(false);
   }, [businessId, selectedPage, startDate, endDate, displayFormat, aiDescription, currentPage, sortBy, duplicatesRange, duplicatesStats]);
 
   useEffect(() => { if (businessId) loadData(); }, [loadData, businessId]);
+
+  // Group dates sorted newest -> oldest
+  const groupedDates = Array.from(new Set(ads.map(a => a.created_at?.split('T')[0]).filter(Boolean)))
+    .sort((a: string, b: string) => new Date(b).getTime() - new Date(a).getTime());
 
   // Helper functions to check business permissions
   const isOwnedBusiness = (bizId: string) => ownedBusinessIds.includes(bizId);
@@ -368,7 +405,7 @@ function HomeContent(): JSX.Element {
           </div>
         ) : (
           <div className="space-y-24">
-            {Array.from(new Set(ads.map(a => a.created_at?.split('T')[0]))).map(date => (
+            {groupedDates.map(date => (
               <section key={date}>
                 <div className="flex items-center gap-4 mb-10">
                   <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-900">{dayjs(date).format('MMM D, YYYY')}</h2>
@@ -376,7 +413,16 @@ function HomeContent(): JSX.Element {
                 </div>
                 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-6 gap-y-12">
-                  {ads.filter(a => a.created_at?.startsWith(date)).map((ad, idx) => {
+                  {(() => {
+                    const dayAds = ads
+                      .filter(a => a.created_at?.startsWith(date))
+                      .slice() // copy
+                      .sort((a, b) => {
+                        const aSize = (a.items ?? a.duplicates_count ?? a.group_items ?? 0);
+                        const bSize = (b.items ?? b.duplicates_count ?? b.group_items ?? 0);
+                        return bSize - aSize; // descending
+                      });
+                    return dayAds.map((ad, idx) => {
                     const queryString = buildQueryString({
                       businessId: businessId || undefined,
                       displayFormat,
@@ -411,6 +457,10 @@ function HomeContent(): JSX.Element {
                             <span>{ad.end_date_formatted?.split(',')[0] || 'Active'}</span>
                           </div>
                         </div>
+                        <div className="mt-2 text-[9px] text-zinc-500 flex items-center justify-between">
+                          <span className="font-bold">ads_groups_test.items</span>
+                          <span className="tabular-nums">{typeof ad.group_items === 'number' ? ad.group_items : '—'}</span>
+                        </div>
                         {ad.ai_description && (
                           <div className="pt-2 border-t border-zinc-100">
                             <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Group Description</p>
@@ -419,10 +469,20 @@ function HomeContent(): JSX.Element {
                             </p>
                           </div>
                         )}
+                        {ad.concept && (
+                          <div className="pt-2 border-t border-zinc-100">
+                            <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Concept</p>
+                            <p className="text-[9px] text-zinc-700 leading-snug line-clamp-3">
+                              {ad.concept}
+                            </p>
+                          </div>
+                        )}
+                      
                       </div>
                     </Link>
                     );
-                  })}
+                    });
+                  })()}
                 </div>
               </section>
             ))}

@@ -93,6 +93,12 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
                 <h1 className="text-3xl font-bold tracking-tight mt-1">{ad.title || 'Untitled Campaign'}</h1>
               </div>
 
+              {ad.concept && (
+                <div className="p-6 bg-zinc-50 rounded-2xl border border-zinc-100 text-zinc-700 text-sm leading-relaxed">
+                  <span className="not-italic font-black text-[9px] uppercase tracking-widest text-zinc-400 block mb-2">Concept</span>
+                  &quot;{ad.concept}&quot;
+                </div>
+              )}
               {ad.ai_description && (
                 <div className="p-6 bg-zinc-50 rounded-2xl border border-zinc-100 italic text-zinc-600 text-sm leading-relaxed">
                   <span className="not-italic font-black text-[9px] uppercase tracking-widest text-zinc-400 block mb-2">AI Analysis</span>

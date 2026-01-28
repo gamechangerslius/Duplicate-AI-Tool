@@ -12,7 +12,7 @@ const PER_PAGE = 24;
 
 const adsCacheMap = new Map<string, { data: any; time: number }>();
 const creativeUrlCache = new Map<string, { url: string | null; time: number }>();
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const CACHE_DURATION = 0; // disabled during debugging to avoid stale counts
 
 export async function fetchAds(
   filters?: {
@@ -134,6 +134,30 @@ export async function fetchAds(
     const statusMap = new Map(statusRes.data?.map(s => [s.vector_group, s]));
     const slug = businessRes.data?.slug;
 
+    // Fetch authoritative counts from `ads` table for the page groups to avoid stale `g.items`
+    const groupVectorIds = pageGroups.map(g => g.vector_group).filter(v => typeof v !== 'undefined' && v !== null);
+    let countsMap = new Map<string, number>();
+    if (groupVectorIds.length > 0) {
+      try {
+        let q = supabase
+          .from(ADS_TABLE)
+          .select('vector_group, ad_archive_id')
+          .in('vector_group', groupVectorIds as any);
+        if (filters?.businessId) q = q.eq('business_id', filters.businessId);
+        const { data: groupRows } = await q;
+        if (groupRows) {
+          const tmp = new Map<string, number>();
+          groupRows.forEach((row: any) => {
+            const vg = String(row.vector_group);
+            tmp.set(vg, (tmp.get(vg) || 0) + 1);
+          });
+          countsMap = tmp;
+        }
+      } catch (err) {
+        console.error('fetchAds: failed to fetch group counts from ads table', err);
+      }
+    }
+
     const ads: Ad[] = [];
     for (const g of pageGroups) {
       const rep = repMap.get(g.rep_ad_archive_id);
@@ -142,11 +166,14 @@ export async function fetchAds(
       const status = statusMap.get(g.vector_group);
       const imageUrl = await getCreativeUrl(rep.ad_archive_id, slug);
 
+      const authoritativeItems = countsMap.get(String(g.vector_group)) ?? (typeof g.items !== 'undefined' ? Number(g.items) : null);
       ads.push({
         ...rep,
         id: rep.ad_archive_id,
         group_status: status?.status || 'Stable',
-        duplicates_count: Number(g.items) - 1,
+        duplicates_count: authoritativeItems !== null ? Number(authoritativeItems) : undefined,
+        items: authoritativeItems !== null ? Number(authoritativeItems) : undefined,
+        group_items: typeof g.items !== 'undefined' ? Number(g.items) : undefined,
         image_url: imageUrl || undefined,
         vector_group: g.vector_group,
         meta_ad_url: `https://www.facebook.com/ads/library/?id=${rep.ad_archive_id}`,
@@ -189,9 +216,26 @@ export async function fetchAdByArchiveId(adArchiveId: string, businessId?: strin
 
   if (error || !data) return null;
 
+  // Compute authoritative group size (items) from `ads` table for this business/vector_group
+  let itemsCount: number | null = null;
+  try {
+    if (data.vector_group !== null && typeof data.vector_group !== 'undefined') {
+      const res = await supabase
+        .from(ADS_TABLE)
+        .select('ad_archive_id', { count: 'exact', head: true })
+        .eq('vector_group', data.vector_group)
+        .eq('business_id', businessId || data.business_id);
+      itemsCount = (res && (res as any).count) ?? null;
+    }
+  } catch (err) {
+    console.error('fetchAdByArchiveId: failed to count group items', err);
+  }
+
   return {
     ...data,
     id: data.ad_archive_id,
+    duplicates_count: itemsCount !== null ? Number(itemsCount) : undefined,
+    items: itemsCount !== null ? Number(itemsCount) : undefined,
     meta_ad_url: `https://www.facebook.com/ads/library/?id=${data.ad_archive_id}`
   } as Ad;
 }
