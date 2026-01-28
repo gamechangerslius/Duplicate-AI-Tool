@@ -113,8 +113,35 @@ export async function fetchAds(
 
     const dateMap = new Map(dateData?.map(d => [d.ad_archive_id, d]));
 
-    // Всегда сортируем newest, если не задано явно
+    // Compute authoritative counts for all filtered groups, then sort by group size (desc)
+    const fullGroupVectorIds = filteredGroups.map(g => g.vector_group).filter(v => typeof v !== 'undefined' && v !== null);
+    let globalCountsMap = new Map<string, number>();
+    if (fullGroupVectorIds.length > 0) {
+      try {
+        let q = supabase
+          .from(ADS_TABLE)
+          .select('vector_group, ad_archive_id')
+          .in('vector_group', fullGroupVectorIds as any);
+        if (filters?.businessId) q = q.eq('business_id', filters.businessId);
+        const { data: allGroupRows } = await q;
+        if (allGroupRows) {
+          const tmp = new Map<string, number>();
+          allGroupRows.forEach((row: any) => {
+            const vg = String(row.vector_group);
+            tmp.set(vg, (tmp.get(vg) || 0) + 1);
+          });
+          globalCountsMap = tmp;
+        }
+      } catch (err) {
+        console.error('fetchAds: failed to fetch global group counts from ads table', err);
+      }
+    }
+
+    // Sort groups by authoritative size desc, fallback to g.items, then newest created_at
     filteredGroups.sort((a, b) => {
+      const aSize = globalCountsMap.get(String(a.vector_group)) ?? (typeof a.items !== 'undefined' ? Number(a.items) : 0);
+      const bSize = globalCountsMap.get(String(b.vector_group)) ?? (typeof b.items !== 'undefined' ? Number(b.items) : 0);
+      if (bSize !== aSize) return bSize - aSize;
       const adA = dateMap.get(a.rep_ad_archive_id);
       const adB = dateMap.get(b.rep_ad_archive_id);
       return new Date(adB?.created_at || 0).getTime() - new Date(adA?.created_at || 0).getTime();
@@ -134,27 +161,35 @@ export async function fetchAds(
     const statusMap = new Map(statusRes.data?.map(s => [s.vector_group, s]));
     const slug = businessRes.data?.slug;
 
-    // Fetch authoritative counts from `ads` table for the page groups to avoid stale `g.items`
-    const groupVectorIds = pageGroups.map(g => g.vector_group).filter(v => typeof v !== 'undefined' && v !== null);
+    // Reuse computed globalCountsMap when available; otherwise fetch counts for page groups
     let countsMap = new Map<string, number>();
-    if (groupVectorIds.length > 0) {
-      try {
-        let q = supabase
-          .from(ADS_TABLE)
-          .select('vector_group, ad_archive_id')
-          .in('vector_group', groupVectorIds as any);
-        if (filters?.businessId) q = q.eq('business_id', filters.businessId);
-        const { data: groupRows } = await q;
-        if (groupRows) {
-          const tmp = new Map<string, number>();
-          groupRows.forEach((row: any) => {
-            const vg = String(row.vector_group);
-            tmp.set(vg, (tmp.get(vg) || 0) + 1);
-          });
-          countsMap = tmp;
+    if (globalCountsMap.size > 0) {
+      pageGroups.forEach(g => {
+        const key = String(g.vector_group);
+        const v = globalCountsMap.get(key);
+        if (typeof v !== 'undefined') countsMap.set(key, v);
+      });
+    } else {
+      const groupVectorIds = pageGroups.map(g => g.vector_group).filter(v => typeof v !== 'undefined' && v !== null);
+      if (groupVectorIds.length > 0) {
+        try {
+          let q = supabase
+            .from(ADS_TABLE)
+            .select('vector_group, ad_archive_id')
+            .in('vector_group', groupVectorIds as any);
+          if (filters?.businessId) q = q.eq('business_id', filters.businessId);
+          const { data: groupRows } = await q;
+          if (groupRows) {
+            const tmp = new Map<string, number>();
+            groupRows.forEach((row: any) => {
+              const vg = String(row.vector_group);
+              tmp.set(vg, (tmp.get(vg) || 0) + 1);
+            });
+            countsMap = tmp;
+          }
+        } catch (err) {
+          console.error('fetchAds: failed to fetch group counts from ads table', err);
         }
-      } catch (err) {
-        console.error('fetchAds: failed to fetch group counts from ads table', err);
       }
     }
 
