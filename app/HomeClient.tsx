@@ -450,11 +450,11 @@ function HomeContent(): JSX.Element {
                         <div className="text-[9px] text-zinc-500 space-y-1">
                           <div className="flex justify-between">
                             <span className="font-bold">Start:</span>
-                            <span>{ad.start_date_formatted?.split(',')[0] || 'N/A'}</span>
+                            <span>{ad.group_first_seen?.split(',')[0] || 'N/A'}</span>
                           </div>
                           <div className="flex justify-between">
                             <span className="font-bold">End:</span>
-                            <span>{ad.end_date_formatted?.split(',')[0] || 'Active'}</span>
+                            <span>{ad.group_last_seen?.split(',')[0] || 'Active'}</span>
                           </div>
                         </div>
                         <div className="mt-2 text-[9px] text-zinc-500 flex items-center justify-between">

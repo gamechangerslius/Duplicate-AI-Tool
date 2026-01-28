@@ -116,21 +116,37 @@ export async function fetchAds(
     // Compute authoritative counts for all filtered groups, then sort by group size (desc)
     const fullGroupVectorIds = filteredGroups.map(g => g.vector_group).filter(v => typeof v !== 'undefined' && v !== null);
     let globalCountsMap = new Map<string, number>();
+    let globalDatesMap = new Map<string, { minStartDate: string | null; maxEndDate: string | null }>();
     if (fullGroupVectorIds.length > 0) {
       try {
         let q = supabase
           .from(ADS_TABLE)
-          .select('vector_group, ad_archive_id')
+          .select('vector_group, ad_archive_id, start_date_formatted, end_date_formatted')
           .in('vector_group', fullGroupVectorIds as any);
         if (filters?.businessId) q = q.eq('business_id', filters.businessId);
         const { data: allGroupRows } = await q;
         if (allGroupRows) {
           const tmp = new Map<string, number>();
+          const dateTmp = new Map<string, { minStartDate: string | null; maxEndDate: string | null }>();
           allGroupRows.forEach((row: any) => {
             const vg = String(row.vector_group);
             tmp.set(vg, (tmp.get(vg) || 0) + 1);
+
+            const s = row.start_date_formatted || null;
+            const e = row.end_date_formatted || null;
+            const cur = dateTmp.get(vg) || { minStartDate: null, maxEndDate: null };
+            if (s) {
+              if (!cur.minStartDate) cur.minStartDate = s;
+              else if (new Date(s).getTime() < new Date(cur.minStartDate).getTime()) cur.minStartDate = s;
+            }
+            if (e) {
+              if (!cur.maxEndDate) cur.maxEndDate = e;
+              else if (new Date(e).getTime() > new Date(cur.maxEndDate).getTime()) cur.maxEndDate = e;
+            }
+            dateTmp.set(vg, cur);
           });
           globalCountsMap = tmp;
+          globalDatesMap = dateTmp;
         }
       } catch (err) {
         console.error('fetchAds: failed to fetch global group counts from ads table', err);
@@ -175,17 +191,32 @@ export async function fetchAds(
         try {
           let q = supabase
             .from(ADS_TABLE)
-            .select('vector_group, ad_archive_id')
+            .select('vector_group, ad_archive_id, start_date_formatted, end_date_formatted')
             .in('vector_group', groupVectorIds as any);
           if (filters?.businessId) q = q.eq('business_id', filters.businessId);
           const { data: groupRows } = await q;
           if (groupRows) {
             const tmp = new Map<string, number>();
+            const dateTmp = new Map<string, { minStartDate: string | null; maxEndDate: string | null }>();
             groupRows.forEach((row: any) => {
               const vg = String(row.vector_group);
               tmp.set(vg, (tmp.get(vg) || 0) + 1);
+              const s = row.start_date_formatted || null;
+              const e = row.end_date_formatted || null;
+              const cur = dateTmp.get(vg) || { minStartDate: null, maxEndDate: null };
+              if (s) {
+                if (!cur.minStartDate) cur.minStartDate = s;
+                else if (new Date(s).getTime() < new Date(cur.minStartDate).getTime()) cur.minStartDate = s;
+              }
+              if (e) {
+                if (!cur.maxEndDate) cur.maxEndDate = e;
+                else if (new Date(e).getTime() > new Date(cur.maxEndDate).getTime()) cur.maxEndDate = e;
+              }
+              dateTmp.set(vg, cur);
             });
             countsMap = tmp;
+            // merge into globalDatesMap for page-level usage
+            dateTmp.forEach((v, k) => globalDatesMap.set(k, v));
           }
         } catch (err) {
           console.error('fetchAds: failed to fetch group counts from ads table', err);
@@ -209,6 +240,8 @@ export async function fetchAds(
         duplicates_count: authoritativeItems !== null ? Number(authoritativeItems) : undefined,
         items: authoritativeItems !== null ? Number(authoritativeItems) : undefined,
         group_items: typeof g.items !== 'undefined' ? Number(g.items) : undefined,
+        group_first_seen: globalDatesMap.get(String(g.vector_group))?.minStartDate || null,
+        group_last_seen: globalDatesMap.get(String(g.vector_group))?.maxEndDate || null,
         image_url: imageUrl || undefined,
         vector_group: g.vector_group,
         meta_ad_url: `https://www.facebook.com/ads/library/?id=${rep.ad_archive_id}`,
