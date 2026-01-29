@@ -71,7 +71,7 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
       videoCheckWarn = true;
     }
   }
-  const groupSize = ad.duplicates_count || (hasGroup ? relatedAds.length + 1 : 1);
+  const groupSize = (typeof (ad as any).items === 'number' ? (ad as any).items : (ad.duplicates_count || (hasGroup ? relatedAds.length + 1 : 1)));
 
   // Get return URL from searchParams
   const returnUrl = typeof searchParams?.returnTo === 'string' ? searchParams.returnTo : '/';

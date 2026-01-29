@@ -49,7 +49,39 @@ export function GroupMetadata({ vectorGroup, businessId }: GroupMetadataProps) {
   }
 
   if (error || !metadata) {
-    return null;
+    return (
+      <div className="p-4 bg-yellow-50 border border-yellow-100 rounded-lg text-sm text-yellow-800">
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="font-bold">Group metadata unavailable</div>
+            <div className="text-xs mt-1">{error ? String(error) : 'No metadata returned from the server.'}</div>
+            <div className="text-xs text-slate-500 mt-2">Debug: vectorGroup={String(vectorGroup)}, businessId={String(businessId)}</div>
+          </div>
+          <div className="ml-4">
+            <button
+              type="button"
+              onClick={() => {
+                setLoading(true);
+                setError(null);
+                // trigger effect by toggling metadata
+                setMetadata(null);
+                fetch(`/api/group-metadata?vectorGroup=${vectorGroup}&businessId=${businessId}`)
+                  .then(r => r.json())
+                  .then(d => {
+                    if (d.error) setError(d.error);
+                    else setMetadata(d);
+                  })
+                  .catch(e => setError('Failed to fetch metadata'))
+                  .finally(() => setLoading(false));
+              }}
+              className="px-3 py-1.5 bg-yellow-600 text-white rounded-md text-xs font-bold hover:bg-yellow-700"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const contentTypeLabel = metadata.content_types?.join('/') || 'Unknown';

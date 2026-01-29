@@ -22,17 +22,19 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
   const [queued, setQueued] = useState<Ad[]>([]);
   const [loading, setLoading] = useState(false);
   const [cursor, setCursor] = useState<string | null>(ads.length ? ads[ads.length - 1].ad_archive_id : null);
+
+  // For related grid, treat the passed `groupSize` as total including the representative shown
+  // on the main view page. The related grid should load at most (groupSize - 1) related items.
+  const totalExcludingRep = (typeof groupSize === 'number' && groupSize > 0) ? Math.max(0, groupSize - 1) : ads.length;
   const [hasMore, setHasMore] = useState(() => {
     const initialVisible = Math.min(6, ads.length);
-    const total = groupSize ?? ads.length;
-    return initialVisible < total;
+    return initialVisible < totalExcludingRep;
   });
+
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
 
   const dedupeByGroup = (list: Ad[]) => {
-    // For related-ads we should not dedupe by vector_group (all items share same group).
-    // Instead dedupe by ad id to remove duplicates only.
     const seen = new Set<string>();
     return list.filter((ad) => {
       const id = String(ad.ad_archive_id || ad.id || '');
@@ -72,61 +74,45 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
     setQueued(rest);
     setCursor(initialVisible.length ? initialVisible[initialVisible.length - 1].ad_archive_id : null);
 
-    const total = groupSize ?? sorted.length;
+    const total = (typeof groupSize === 'number' && groupSize > 0) ? Math.max(0, groupSize - 1) : sorted.length;
     setHasMore(initialVisible.length < total);
   }, [ads, sortByStatus, groupSize]);
 
   useEffect(() => {
     const loadImages = async () => {
-      // Collect ads that need image loading
       const adsNeedingImages = items.filter(ad => !ad.image_url && !imageUrls[ad.ad_archive_id]);
-      
       if (adsNeedingImages.length === 0) return;
 
-      console.log(`[RelatedAdsGrid] Loading ${adsNeedingImages.length} images in parallel...`);
       setLoadingIds(new Set(adsNeedingImages.map(a => a.ad_archive_id)));
-      
-      // Load all images in parallel
+
       const imagePromises = adsNeedingImages.map(async (ad) => {
-        const url = await getCreativeUrl(ad.ad_archive_id, businessSlug);
-        if (url) {
-          console.log(`[RelatedAdsGrid] ✓ Found image for ${ad.ad_archive_id}: ${url.substring(0, 60)}...`);
-          return { adId: ad.ad_archive_id, url };
-        } else {
-          console.warn(`[RelatedAdsGrid] ✗ No image found for ad=${ad.ad_archive_id}`);
+        try {
+          const url = await getCreativeUrl(ad.ad_archive_id, businessSlug);
+          return url ? { adId: ad.ad_archive_id, url } : null;
+        } catch (err) {
           return null;
         }
       });
 
-      // Wait for all to complete and update state once
       const results = await Promise.all(imagePromises);
       const newUrls: Record<string, string> = {};
-      
-      results.forEach(result => {
-        if (result) {
-          newUrls[result.adId] = result.url;
-        }
-      });
-
-      if (Object.keys(newUrls).length > 0) {
-        setImageUrls(prev => ({ ...prev, ...newUrls }));
-        console.log(`[RelatedAdsGrid] ✓ Loaded ${Object.keys(newUrls).length} images`);
-      }
-      // clear loading ids for these ads
+      results.forEach(r => { if (r) newUrls[r.adId] = r.url; });
+      if (Object.keys(newUrls).length > 0) setImageUrls(prev => ({ ...prev, ...newUrls }));
       setLoadingIds(new Set());
     };
-    
     loadImages();
   }, [items, businessSlug, imageUrls, sortByStatus]);
 
   async function loadMore() {
     if (loading || !hasMore) return;
-    if (groupSize && items.length >= groupSize) {
+
+    // If we already have enough items equal to the group's total excluding rep, stop
+    if (typeof groupSize === 'number' && groupSize > 0 && items.length >= Math.max(0, groupSize - 1)) {
       setHasMore(false);
       return;
     }
 
-    // First, drain queued items before hitting the network
+    // Drain queued items first
     if (queued.length > 0) {
       const chunk = queued.slice(0, 6);
       const remaining = queued.slice(chunk.length);
@@ -135,8 +121,8 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
       setItems(updated);
       setCursor(updated.length ? updated[updated.length - 1].ad_archive_id : null);
 
-      if (groupSize) {
-        setHasMore(updated.length < groupSize);
+      if (typeof groupSize === 'number' && groupSize > 0) {
+        setHasMore(updated.length < Math.max(0, groupSize - 1));
       } else {
         setHasMore(remaining.length > 0 || updated.length < ads.length);
       }
@@ -145,11 +131,11 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
 
     setLoading(true);
     try {
-      const params = new URLSearchParams({ 
-        vector_group: String(vectorGroup), 
-        current_id: currentAdArchiveId, 
+      const params = new URLSearchParams({
+        vector_group: String(vectorGroup),
+        current_id: currentAdArchiveId,
         business_id: businessId,
-        limit: '60' 
+        limit: '60'
       });
       if (cursor) params.set('last_id', cursor);
       const res = await fetch(`/api/related-ads?${params.toString()}`);
@@ -159,8 +145,8 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
         const updated = sortByStatus([...items, ...newItems]);
         setItems(updated);
         setCursor(json.nextCursor || newItems[newItems.length - 1].ad_archive_id);
-        if (groupSize) {
-          setHasMore(updated.length < groupSize);
+        if (typeof groupSize === 'number' && groupSize > 0) {
+          setHasMore(updated.length < Math.max(0, groupSize - 1));
         } else {
           setHasMore(Boolean(json.hasMore));
         }
@@ -178,18 +164,18 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
     <div>
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
         {items.map((ad) => (
-            <button
-              key={ad.ad_archive_id}
-              type="button"
-              onClick={() => setSelected(ad)}
-              className={`group text-left ${ad.status === 'Inactive' ? 'opacity-60 saturate-50' : ''}`}
-              aria-label={`Open details for ${ad.ad_archive_id}`}
-            >
-              <div>
-                <AdCard ad={{ ...ad, image_url: imageUrls[ad.ad_archive_id] || ad.image_url }} isRefreshing={loadingIds.has(ad.ad_archive_id)} />
-              </div>
-            </button>
-          ))}
+          <button
+            key={ad.ad_archive_id}
+            type="button"
+            onClick={() => setSelected(ad)}
+            className={`group text-left ${ad.status === 'Inactive' ? 'opacity-60 saturate-50' : ''}`}
+            aria-label={`Open details for ${ad.ad_archive_id}`}
+          >
+            <div>
+              <AdCard ad={{ ...ad, image_url: imageUrls[ad.ad_archive_id] || ad.image_url }} isRefreshing={loadingIds.has(ad.ad_archive_id)} />
+            </div>
+          </button>
+        ))}
       </div>
 
       {hasMore && (
