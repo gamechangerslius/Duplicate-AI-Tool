@@ -57,6 +57,7 @@ function HomeContent(): JSX.Element {
   type SortByType = 'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc' | undefined;
   const [sortBy, setSortBy] = useState<SortByType>('newest');
   const [duplicatesRange, setDuplicatesRange] = useState<[number, number]>([0, 100]);
+  const [committedDuplicatesRange, setCommittedDuplicatesRange] = useState<[number, number]>([0, 100]);
   const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({ min: 0, max: 100 });
   const [showDuplicatesSlider, setShowDuplicatesSlider] = useState(false);
   
@@ -65,6 +66,7 @@ function HomeContent(): JSX.Element {
   const initialized = useRef(false);
   const suppressNextLoad = useRef(false);
   const popHandledAt = useRef<number | null>(null);
+  const duplicatesTouched = useRef(false);
 
   const buildQueryString = useCallback((params: any) => {
     const query = new URLSearchParams();
@@ -133,7 +135,9 @@ function HomeContent(): JSX.Element {
       const minDupParam = searchParams.get('minDuplicates');
       const maxDupParam = searchParams.get('maxDuplicates');
       if (minDupParam && maxDupParam) {
-        setDuplicatesRange([Number(minDupParam), Number(maxDupParam)]);
+        const initialRange: [number, number] = [Number(minDupParam), Number(maxDupParam)];
+        setDuplicatesRange(initialRange);
+        setCommittedDuplicatesRange(initialRange);
         duplicatesInitialized.current = true;
       }
 
@@ -154,7 +158,10 @@ function HomeContent(): JSX.Element {
         
         setAds(my.ads);
         setCurrentPage(my.currentPage || 1);
-        if (my.duplicatesRange) setDuplicatesRange(my.duplicatesRange);
+        if (my.duplicatesRange) {
+          setDuplicatesRange(my.duplicatesRange);
+          setCommittedDuplicatesRange(my.duplicatesRange);
+        }
         setLoading(false);
       }
     };
@@ -168,18 +175,18 @@ function HomeContent(): JSX.Element {
 
     const queryString = buildQueryString({
       businessId, displayFormat, selectedPage, startDate, endDate,
-      aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange
+      aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange: committedDuplicatesRange
     });
 
     const newUrl = queryString ? `/?${queryString}` : '/';
     try {
       const existing = window.history.state || {};
-      const newState = { ...existing, __myAppState: { ads, currentPage, duplicatesRange } };
+      const newState = { ...existing, __myAppState: { ads, currentPage, duplicatesRange: committedDuplicatesRange } };
       window.history.replaceState(newState, '', newUrl);
     } catch (err) {
       window.history.replaceState(window.history.state, '', newUrl);
     }
-  }, [ads, businessId, displayFormat, selectedPage, startDate, endDate, committedAiDescription, sortBy, currentPage, duplicatesRange, buildQueryString]);
+  }, [ads, businessId, displayFormat, selectedPage, startDate, endDate, committedAiDescription, sortBy, currentPage, committedDuplicatesRange, buildQueryString]);
 
   // 4. Data Loading Logic
   const loadData = useCallback(async () => {
@@ -194,7 +201,11 @@ function HomeContent(): JSX.Element {
     setLoading(true);
     setRefreshingIds(new Set(ads.map(a => a.ad_archive_id)));
 
-    const params = {
+    const activeMin = Math.max(1, duplicatesStats.min || 1);
+    const activeMax = Math.max(1, duplicatesStats.max || 1);
+    const includeDuplicates = duplicatesTouched.current || (committedDuplicatesRange[0] !== activeMin || committedDuplicatesRange[1] !== activeMax);
+
+    const params: any = {
       businessId,
       pageName: selectedPage || undefined,
       startDate: startDate || undefined,
@@ -202,8 +213,11 @@ function HomeContent(): JSX.Element {
       displayFormat: displayFormat !== 'ALL' ? displayFormat : undefined,
       aiDescription: committedAiDescription || undefined,
       sortBy: sortBy || undefined,
-      duplicatesRange: { min: duplicatesRange[0], max: duplicatesRange[1] }
     };
+
+    if (includeDuplicates) {
+      params.duplicatesRange = { min: committedDuplicatesRange[0], max: committedDuplicatesRange[1] };
+    }
 
     try {
       const { ads: data, total } = await fetchAds(params, { page: currentPage, perPage: PER_PAGE });
@@ -214,7 +228,7 @@ function HomeContent(): JSX.Element {
       setRefreshingIds(new Set());
       setLoading(false);
     }
-  }, [businessId, selectedPage, startDate, endDate, displayFormat, committedAiDescription, currentPage, sortBy, duplicatesRange]);
+  }, [businessId, selectedPage, startDate, endDate, displayFormat, committedAiDescription, currentPage, sortBy, committedDuplicatesRange]);
 
   // Trigger loadData when filters change
   useEffect(() => {
@@ -233,7 +247,9 @@ function HomeContent(): JSX.Element {
         const safeStats = { min: Math.max(1, stats.min), max: Math.max(1, stats.max) };
         setDuplicatesStats(safeStats);
         if (!duplicatesInitialized.current) {
-          setDuplicatesRange([safeStats.min, safeStats.max]);
+          const initRange: [number, number] = [safeStats.min, safeStats.max];
+          setDuplicatesRange(initRange);
+          setCommittedDuplicatesRange(initRange);
           duplicatesInitialized.current = true;
           setShowDuplicatesSlider(true);
         }
@@ -246,6 +262,12 @@ function HomeContent(): JSX.Element {
     const t = setTimeout(() => setCommittedAiDescription(aiDescription), 1000);
     return () => clearTimeout(t);
   }, [aiDescription]);
+
+  // Debounce duplicatesRange commits (1s) so we don't refetch while user is sliding
+  useEffect(() => {
+    const t = setTimeout(() => setCommittedDuplicatesRange(duplicatesRange), 1000);
+    return () => clearTimeout(t);
+  }, [duplicatesRange]);
 
   const isOwnedBusiness = (bizId: string) => ownedBusinessIds.includes(bizId);
   const canEditBusiness = (bizId: string) => isAdmin || isOwnedBusiness(bizId);
@@ -290,6 +312,7 @@ function HomeContent(): JSX.Element {
                   setAiDescription('');
                   setCommittedAiDescription('');
                   duplicatesInitialized.current = false;
+                  duplicatesTouched.current = false;
                   setBusinessId(newBizId);
                 }
               }}
@@ -301,7 +324,7 @@ function HomeContent(): JSX.Element {
                 </option>
               ))}
             </select>
-            <Link href={`/setup?returnTo=${encodeURIComponent(`/?${buildQueryString({ businessId, displayFormat, selectedPage, startDate, endDate, aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange })}`)}`} className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm">
+            <Link href={`/setup?returnTo=${encodeURIComponent(`/?${buildQueryString({ businessId, displayFormat, selectedPage, startDate, endDate, aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange: committedDuplicatesRange })}`)}`} className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm">
               Import
             </Link>
           </div>
@@ -353,7 +376,10 @@ function HomeContent(): JSX.Element {
             </div>
             <Slider
               value={duplicatesRange}
-              onChange={(_, newValue) => setDuplicatesRange(newValue as [number, number])}
+              onChange={(_, newValue) => {
+                duplicatesTouched.current = true;
+                setDuplicatesRange(newValue as [number, number]);
+              }}
               min={Math.max(1, duplicatesStats.min)}
               max={Math.max(1, duplicatesStats.max)}
               sx={{ color: '#18181b' }}
@@ -388,7 +414,7 @@ function HomeContent(): JSX.Element {
                   {ads.filter(a => a.created_at?.startsWith(date)).map((ad, idx) => {
                     const currentQs = buildQueryString({
                       businessId, displayFormat, selectedPage, startDate, endDate,
-                      aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange
+                      aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange: committedDuplicatesRange
                     });
                     const viewParams = new URLSearchParams(currentQs);
                     viewParams.set('returnTo', `/?${currentQs}`);
@@ -405,6 +431,18 @@ function HomeContent(): JSX.Element {
                             <span className="font-bold">Total Items:</span>
                             <span className="tabular-nums">{ad.items ?? ad.duplicates_count ?? '—'}</span>
                           </div>
+                          {ad.ai_description && (
+                            <div className="pt-2">
+                              <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Group Description</p>
+                              <p className="text-[9px] text-zinc-600 leading-snug line-clamp-2">{ad.ai_description.replace(/\*\*|^\W+|\W+$/g, '').slice(0, 140)}</p>
+                            </div>
+                          )}
+                          {ad.concept && (
+                            <div className="pt-2">
+                              <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Concept</p>
+                              <p className="text-[9px] text-zinc-700 leading-snug line-clamp-2">{ad.concept}</p>
+                            </div>
+                          )}
                         </div>
                       </Link>
                     );
