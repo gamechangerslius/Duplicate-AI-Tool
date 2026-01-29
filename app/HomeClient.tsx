@@ -53,28 +53,20 @@ function HomeContent(): JSX.Element {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [aiDescription, setAiDescription] = useState('');
+  const [committedAiDescription, setCommittedAiDescription] = useState('');
   type SortByType = 'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc' | undefined;
   const [sortBy, setSortBy] = useState<SortByType>('newest');
   const [duplicatesRange, setDuplicatesRange] = useState<[number, number]>([0, 100]);
   const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({ min: 0, max: 100 });
   const [showDuplicatesSlider, setShowDuplicatesSlider] = useState(false);
-  const duplicatesInitialized = useRef(false);
   
-  // Track if we've initialized from URL
+  // Refs for navigation control
+  const duplicatesInitialized = useRef(false);
   const initialized = useRef(false);
+  const suppressNextLoad = useRef(false);
+  const popHandledAt = useRef<number | null>(null);
 
-  // Function to build query string from current filters
-  const buildQueryString = useCallback((params: {
-    displayFormat?: string;
-    selectedPage?: string;
-    startDate?: string;
-    endDate?: string;
-    aiDescription?: string;
-    sortBy?: SortByType;
-    currentPage?: number;
-    businessId?: string;
-    duplicatesRange?: [number, number];
-  }) => {
+  const buildQueryString = useCallback((params: any) => {
     const query = new URLSearchParams();
     if (params.businessId) query.set('businessId', params.businessId);
     if (params.displayFormat && params.displayFormat !== 'ALL') query.set('displayFormat', params.displayFormat);
@@ -84,14 +76,14 @@ function HomeContent(): JSX.Element {
     if (params.aiDescription) query.set('aiDescription', params.aiDescription);
     if (params.sortBy && params.sortBy !== 'newest') query.set('sortBy', params.sortBy);
     if (params.currentPage && params.currentPage > 1) query.set('page', String(params.currentPage));
-    if (params.duplicatesRange && (params.duplicatesRange[0] > 0 || params.duplicatesRange[1] < 100)) {
+    if (params.duplicatesRange) {
       query.set('minDuplicates', String(params.duplicatesRange[0]));
       query.set('maxDuplicates', String(params.duplicatesRange[1]));
     }
     return query.toString();
   }, []);
 
-  // Initialize businesses and filters from URL on mount
+  // 1. Initial Load & URL Sync
   useEffect(() => {
     (async () => {
       const supabase = createClient();
@@ -102,148 +94,159 @@ function HomeContent(): JSX.Element {
       const adminStatus = await isUserAdmin(user.id);
       setIsAdmin(adminStatus);
 
-      // Load all businesses
       const { data: biz } = await supabase.from('businesses').select('*');
       const bData = biz || [];
       setBusinesses(bData);
 
-      // Track which businesses user owns
-      const ownedIds = bData
-        .filter(b => b.owner_id === user.id)
-        .map(b => b.id);
+      const ownedIds = bData.filter(b => b.owner_id === user.id).map(b => b.id);
       setOwnedBusinessIds(ownedIds);
       
-      // Initialize all filters from URL
       const urlBusinessId = searchParams.get('businessId');
       const initialBusinessId = urlBusinessId || (bData.length > 0 ? bData[0].id : null);
       
-      // If no business selected, redirect to choose-business page
       if (!initialBusinessId) {
         router.replace('/choose-business');
         return;
       }
       
-      if (initialBusinessId) {
-        setBusinessId(initialBusinessId);
-        const pages = await fetchPageNames(initialBusinessId);
-        
-        // Fetch duplicates stats for slider range
-        const stats = await fetchDuplicatesStats(initialBusinessId);
-        // Ensure min is at least 1
-        const safeStats = { min: Math.max(1, stats.min), max: Math.max(1, stats.max) };
-        setDuplicatesStats(safeStats);
-        if (!duplicatesInitialized.current) {
-          setDuplicatesRange([safeStats.min, safeStats.max]);
-          duplicatesInitialized.current = true;
-        }
-        setPageNames(pages);
-      }
+      setBusinessId(initialBusinessId);
       
-      // Initialize other filters from URL
-      const displayFormatParam = searchParams.get('displayFormat') as 'ALL' | 'IMAGE' | 'VIDEO' | null;
+      // Parse other filters from URL
+      const displayFormatParam = searchParams.get('displayFormat') as any;
       if (displayFormatParam) setDisplayFormat(displayFormatParam);
-      
       const pageNameParam = searchParams.get('pageName');
       if (pageNameParam) setSelectedPage(pageNameParam);
-      
       const startDateParam = searchParams.get('startDate');
       if (startDateParam) setStartDate(startDateParam);
-      
       const endDateParam = searchParams.get('endDate');
       if (endDateParam) setEndDate(endDateParam);
-      
       const aiDescriptionParam = searchParams.get('aiDescription');
-      if (aiDescriptionParam) setAiDescription(aiDescriptionParam);
-      
-      const sortByParam = searchParams.get('sortBy');
-      if (sortByParam === 'newest' || sortByParam === 'oldest' || sortByParam === 'start_date_asc' || sortByParam === 'start_date_desc') {
-        setSortBy(sortByParam);
+      if (aiDescriptionParam) {
+        setAiDescription(aiDescriptionParam);
+        setCommittedAiDescription(aiDescriptionParam);
       }
-      
+      const sortByParam = searchParams.get('sortBy') as any;
+      if (sortByParam) setSortBy(sortByParam);
+      const pageParam = searchParams.get('page');
+      if (pageParam) setCurrentPage(Number(pageParam));
+
+      const minDupParam = searchParams.get('minDuplicates');
+      const maxDupParam = searchParams.get('maxDuplicates');
+      if (minDupParam && maxDupParam) {
+        setDuplicatesRange([Number(minDupParam), Number(maxDupParam)]);
+        duplicatesInitialized.current = true;
+      }
+
       initialized.current = true;
       setAuthCheckLoading(false);
     })();
-  }, [router, searchParams]); // Include router and searchParams
+  }, [router, searchParams]);
 
-  // Update URL when filters change (after initialization)
+  // 2. Browser Back/Forward Handling
   useEffect(() => {
-    if (!initialized.current || !businessId) return;
-    
+    const onPop = (e: PopStateEvent) => {
+      const s = e.state;
+      const my = s?.__myAppState;
+      if (my && Array.isArray(my.ads)) {
+        // Critical: Set these before state updates trigger effects
+        suppressNextLoad.current = true;
+        popHandledAt.current = Date.now();
+        
+        setAds(my.ads);
+        setCurrentPage(my.currentPage || 1);
+        if (my.duplicatesRange) setDuplicatesRange(my.duplicatesRange);
+        setLoading(false);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // 3. Update History State on filter changes
+  useEffect(() => {
+    if (!initialized.current || !businessId || suppressNextLoad.current) return;
+
     const queryString = buildQueryString({
-      businessId: businessId || undefined,
-      displayFormat,
-      selectedPage,
-      startDate,
-      endDate,
-      aiDescription,
-      sortBy,
-      currentPage,
-      duplicatesRange
+      businessId, displayFormat, selectedPage, startDate, endDate,
+      aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange
     });
-    
+
     const newUrl = queryString ? `/?${queryString}` : '/';
-    // Use history.replaceState to update the URL without causing scroll/top navigation
-    if (typeof window !== 'undefined' && window.history && window.history.replaceState) {
-      window.history.replaceState(null, '', newUrl);
-    } else {
-      router.replace(newUrl);
+    try {
+      const existing = window.history.state || {};
+      const newState = { ...existing, __myAppState: { ads, currentPage, duplicatesRange } };
+      window.history.replaceState(newState, '', newUrl);
+    } catch (err) {
+      window.history.replaceState(window.history.state, '', newUrl);
     }
-  }, [businessId, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, duplicatesRange, buildQueryString, router]);
-  
-  // Fetch page names and duplicates stats when businessId changes
+  }, [ads, businessId, displayFormat, selectedPage, startDate, endDate, committedAiDescription, sortBy, currentPage, duplicatesRange, buildQueryString]);
+
+  // 4. Data Loading Logic
+  const loadData = useCallback(async () => {
+    if (!businessId || !initialized.current) return;
+
+    // Check if we should block this fetch (from popstate)
+    if (suppressNextLoad.current || (popHandledAt.current && Date.now() - popHandledAt.current < 1000)) {
+      suppressNextLoad.current = false;
+      return;
+    }
+
+    setLoading(true);
+    setRefreshingIds(new Set(ads.map(a => a.ad_archive_id)));
+
+    const params = {
+      businessId,
+      pageName: selectedPage || undefined,
+      startDate: startDate || undefined,
+      endDate: endDate || undefined,
+      displayFormat: displayFormat !== 'ALL' ? displayFormat : undefined,
+      aiDescription: committedAiDescription || undefined,
+      sortBy: sortBy || undefined,
+      duplicatesRange: { min: duplicatesRange[0], max: duplicatesRange[1] }
+    };
+
+    try {
+      const { ads: data, total } = await fetchAds(params, { page: currentPage, perPage: PER_PAGE });
+      setAds(data);
+      setTotalPages(Math.ceil(total / PER_PAGE));
+      setShowDuplicatesSlider(data.length > 0);
+    } finally {
+      setRefreshingIds(new Set());
+      setLoading(false);
+    }
+  }, [businessId, selectedPage, startDate, endDate, displayFormat, committedAiDescription, currentPage, sortBy, duplicatesRange]);
+
+  // Trigger loadData when filters change
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // 5. Metadata (Stats/PageNames)
   useEffect(() => {
     if (businessId && initialized.current) {
       (async () => {
-        const pages = await fetchPageNames(businessId);
+        const [pages, stats] = await Promise.all([
+          fetchPageNames(businessId),
+          fetchDuplicatesStats(businessId)
+        ]);
         setPageNames(pages);
-        
-        const stats = await fetchDuplicatesStats(businessId);
         const safeStats = { min: Math.max(1, stats.min), max: Math.max(1, stats.max) };
         setDuplicatesStats(safeStats);
         if (!duplicatesInitialized.current) {
           setDuplicatesRange([safeStats.min, safeStats.max]);
           duplicatesInitialized.current = true;
+          setShowDuplicatesSlider(true);
         }
       })();
     }
   }, [businessId]);
 
-  const loadData = useCallback(async () => {
-    if (!businessId) return;
-    // mark current ads as refreshing so cards can show per-card spinner
-    setRefreshingIds(new Set(ads.map(a => a.ad_archive_id)));
-    setLoading(true);
-    const duplicatesFilter = (duplicatesRange[0] > duplicatesStats.min || duplicatesRange[1] < duplicatesStats.max) ? {
-      min: duplicatesRange[0],
-      max: duplicatesRange[1]
-    } : undefined;
-    const { ads: data, total } = await fetchAds({
-      businessId,
-      pageName: selectedPage || undefined,
-      startDate: startDate || undefined,
-      endDate: endDate || undefined,
-      displayFormat: displayFormat === 'ALL' ? undefined : displayFormat,
-      aiDescription: aiDescription || undefined,
-      sortBy: sortBy || undefined,
-      duplicatesRange: duplicatesFilter
-    }, { page: currentPage, perPage: PER_PAGE });
-    // Use `items` provided by the server (ads_groups_test.items is authoritative)
-    setAds(data);
-    setTotalPages(Math.ceil(total / PER_PAGE));
-    // clear refresh indicators
-    setRefreshingIds(new Set());
-    setLoading(false);
-    // Show range selector only after we have ads from the server
-    setShowDuplicatesSlider((data || []).length > 0);
-  }, [businessId, selectedPage, startDate, endDate, displayFormat, aiDescription, currentPage, sortBy, duplicatesRange, duplicatesStats]);
+  // Debounce AI Search
+  useEffect(() => {
+    const t = setTimeout(() => setCommittedAiDescription(aiDescription), 1000);
+    return () => clearTimeout(t);
+  }, [aiDescription]);
 
-  useEffect(() => { if (businessId) loadData(); }, [loadData, businessId]);
-
-  // Group dates sorted newest -> oldest
-  const groupedDates = Array.from(new Set(ads.map(a => a.created_at?.split('T')[0]).filter(Boolean)))
-    .sort((a: string, b: string) => new Date(b).getTime() - new Date(a).getTime());
-
-  // Helper functions to check business permissions
   const isOwnedBusiness = (bizId: string) => ownedBusinessIds.includes(bizId);
   const canEditBusiness = (bizId: string) => isAdmin || isOwnedBusiness(bizId);
 
@@ -253,9 +256,12 @@ function HomeContent(): JSX.Element {
     </div>
   );
 
+  // Grouping dates for UI
+  const groupedDates = Array.from(new Set(ads.map(a => a.created_at?.split('T')[0]).filter(Boolean)))
+    .sort((a, b) => dayjs(b).unix() - dayjs(a).unix());
+
   return (
     <div className="min-h-screen bg-white text-zinc-900 selection:bg-zinc-100">
-      {/* 1. Header Navigation */}
       <nav className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-zinc-100">
         <div className="max-w-screen-2xl mx-auto px-6 h-14 flex items-center justify-between">
           <span className="text-xs font-black tracking-[0.3em] uppercase">Duplicate Tool</span>
@@ -264,7 +270,6 @@ function HomeContent(): JSX.Element {
       </nav>
 
       <main className="max-w-screen-2xl mx-auto px-6 py-12">
-        {/* 2. Top Section: Title & Business Selector */}
         <header className="mb-16 flex flex-col md:flex-row md:items-end justify-between gap-8">
           <div>
             <h1 className="text-4xl font-light tracking-tight text-zinc-950 mb-2">Creative Library</h1>
@@ -276,48 +281,39 @@ function HomeContent(): JSX.Element {
               onChange={(e) => {
                 const newBizId = e.target.value;
                 if (!canEditBusiness(newBizId)) {
-                  alert('You can only view this business. Contact owner or admin for edit access.');
+                  alert('Access denied.');
                   return;
                 }
-
-                // If switching to a different business, reset all filters to defaults
-                if (newBizId && newBizId !== businessId) {
-                  setDisplayFormat('ALL');
+                if (newBizId !== businessId) {
+                  // Reset states for new business
                   setSelectedPage('');
-                  setStartDate('');
-                  setEndDate('');
                   setAiDescription('');
-                  setSortBy('newest');
-                  setCurrentPage(1);
-                  // Allow duplicates range to be re-initialized for the new business
+                  setCommittedAiDescription('');
                   duplicatesInitialized.current = false;
+                  setBusinessId(newBizId);
                 }
-
-                setBusinessId(newBizId);
               }}
-              className="h-10 px-4 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold focus:ring-1 focus:ring-zinc-200 outline-none transition-all cursor-pointer"
+              className="h-10 px-4 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold outline-none cursor-pointer"
             >
-              {businesses.map(b => {
-                const owned = isOwnedBusiness(b.id);
-                const canEdit = canEditBusiness(b.id);
-                const label = owned ? ` ${b.name || b.slug} (Owner)` : (isAdmin && !owned ? ` ${b.name || b.slug} (Admin)` : ` ${b.name || b.slug}`);
-                const suffix = canEdit ? '' : ' (Viewable Only)';
-                return <option key={b.id} value={b.id}>{label}{suffix}</option>;
-              })}
+              {businesses.map(b => (
+                <option key={b.id} value={b.id}>
+                  {b.name || b.slug} {isOwnedBusiness(b.id) ? '(Owner)' : ''}
+                </option>
+              ))}
             </select>
-            <Link href={`/setup?returnTo=${encodeURIComponent(`/?${buildQueryString({ businessId: businessId || undefined, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, duplicatesRange })}`)}`} className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm">
+            <Link href={`/setup?returnTo=${encodeURIComponent(`/?${buildQueryString({ businessId, displayFormat, selectedPage, startDate, endDate, aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange })}`)}`} className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm">
               Import
             </Link>
           </div>
         </header>
 
-        {/* 3. Filter Bar (Search & Dates) */}
+        {/* Filters */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
           <div className="flex flex-col gap-1.5">
             <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">Page</label>
             <select 
               value={selectedPage} onChange={e => setSelectedPage(e.target.value)}
-              className="h-10 px-3 bg-white border border-zinc-200 rounded-lg text-xs outline-none focus:border-zinc-950 transition-colors"
+              className="h-10 px-3 bg-white border border-zinc-200 rounded-lg text-xs outline-none focus:border-zinc-950"
             >
               <option value="">All Pages</option>
               {pageNames.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
@@ -328,7 +324,7 @@ function HomeContent(): JSX.Element {
             <input 
               type="text" value={aiDescription} onChange={e => setAiDescription(e.target.value)}
               placeholder="Search visual elements..."
-              className="h-10 px-4 bg-white border border-zinc-200 rounded-lg text-xs outline-none focus:border-zinc-950 transition-colors"
+              className="h-10 px-4 bg-white border border-zinc-200 rounded-lg text-xs outline-none focus:border-zinc-950"
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -349,53 +345,22 @@ function HomeContent(): JSX.Element {
           </div>
         </div>
 
-        {/* Duplicates Range Filter */}
-        {showDuplicatesSlider ? (
+        {showDuplicatesSlider && (
           <div className="mb-6 bg-white border border-zinc-200 rounded-lg p-4 max-w-md">
-          <div className="flex items-center justify-between mb-3">
-            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Duplicates</label>
-            <span className="text-[10px] font-bold text-zinc-900 tabular-nums">
-              {duplicatesRange[0]} - {duplicatesRange[1]}
-            </span>
-          </div>
-          <Slider
-            value={duplicatesRange}
-            onChange={(_, newValue) => setDuplicatesRange(newValue as [number, number])}
-            valueLabelDisplay="auto"
-            min={Math.max(1, duplicatesStats.min)}
-            max={Math.max(1, duplicatesStats.max)}
-            sx={{
-              color: '#18181b',
-              height: 3,
-              '& .MuiSlider-thumb': {
-                width: 16,
-                height: 16,
-                '&:hover, &.Mui-focusVisible': {
-                  boxShadow: '0 0 0 6px rgba(24, 24, 27, 0.12)',
-                },
-              },
-              '& .MuiSlider-track': {
-                height: 3,
-              },
-              '& .MuiSlider-rail': {
-                height: 3,
-                opacity: 0.2,
-              },
-              '& .MuiSlider-valueLabel': {
-                fontSize: 10,
-                fontWeight: 'bold',
-                padding: '4px 6px',
-              },
-            }}
-          />
-            <div className="flex justify-between mt-1">
-              <span className="text-[9px] text-zinc-400 tabular-nums">{Math.max(1, duplicatesStats.min)}</span>
-              <span className="text-[9px] text-zinc-400 tabular-nums">{Math.max(1, duplicatesStats.max)}</span>
+            <div className="flex items-center justify-between mb-3">
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Duplicates</label>
+              <span className="text-[10px] font-bold text-zinc-900">{duplicatesRange[0]} - {duplicatesRange[1]}</span>
             </div>
+            <Slider
+              value={duplicatesRange}
+              onChange={(_, newValue) => setDuplicatesRange(newValue as [number, number])}
+              min={Math.max(1, duplicatesStats.min)}
+              max={Math.max(1, duplicatesStats.max)}
+              sx={{ color: '#18181b' }}
+            />
           </div>
-        ) : null}
+        )}
 
-        {/* 4. CONTENT ACTION BAR (Toggle & Counter) */}
         <div className="flex items-center justify-between py-6 mb-8 border-y border-zinc-50">
           <div className="bg-zinc-50 p-1 rounded-lg border border-zinc-100">
             <ViewToggle value={displayFormat} onChange={setDisplayFormat} />
@@ -406,7 +371,6 @@ function HomeContent(): JSX.Element {
           </div>
         </div>
 
-        {/* 5. Ads Grid */}
         {loading && ads.length === 0 ? (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6">
             {[...Array(12)].map((_, i) => <div key={i} className="aspect-[3/4] bg-zinc-50 rounded-xl animate-pulse" />)}
@@ -421,91 +385,43 @@ function HomeContent(): JSX.Element {
                 </div>
                 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-6 gap-y-12">
-                  {(() => {
-                    const dayAds = ads
-                      .filter(a => a.created_at?.startsWith(date))
-                      .slice() // copy
-                      .sort((a, b) => {
-                        const aSize = (a.items ?? a.duplicates_count ?? a.group_items ?? 0);
-                        const bSize = (b.items ?? b.duplicates_count ?? b.group_items ?? 0);
-                        return bSize - aSize; // descending
-                      });
-                    return dayAds.map((ad, idx) => {
-                    const queryString = buildQueryString({
-                      businessId: businessId || undefined,
-                      displayFormat,
-                      selectedPage,
-                      startDate,
-                      endDate,
-                      aiDescription,
-                      sortBy,
-                      currentPage,
-                      duplicatesRange
+                  {ads.filter(a => a.created_at?.startsWith(date)).map((ad, idx) => {
+                    const currentQs = buildQueryString({
+                      businessId, displayFormat, selectedPage, startDate, endDate,
+                      aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange
                     });
-                    
-                    const returnToUrl = `/?${queryString}`;
-                    const viewParams = new URLSearchParams(queryString);
-                    viewParams.set('returnTo', returnToUrl);
+                    const viewParams = new URLSearchParams(currentQs);
+                    viewParams.set('returnTo', `/?${currentQs}`);
 
                     return (
-                    <Link key={idx} href={`/view/${ad.ad_archive_id}?${viewParams.toString()}`} className="group block p-3 rounded-xl transition-all duration-500 hover:bg-zinc-50 hover:shadow-2xl hover:shadow-black/15 hover:-translate-y-2 border border-transparent hover:border-zinc-200">
-                      <div className="aspect-[3/4] mb-4 overflow-hidden rounded-lg bg-zinc-50">
-                        <AdCard ad={ad} isRefreshing={refreshingIds.has(ad.ad_archive_id)} />
-                      </div>
-                      <div className="space-y-2 px-1">
-                        <p className="text-[10px] font-black text-zinc-950 truncate uppercase tracking-tight">{ad.page_name}</p>
-                        <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-tighter">ID: {ad.ad_archive_id}</p>
-                        <div className="text-[9px] text-zinc-500 space-y-1">
-                          <div className="flex justify-between">
-                            <span className="font-bold">Start:</span>
-                            <span>{ad.group_first_seen?.split(',')[0] || 'N/A'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="font-bold">End:</span>
-                            <span>{ad.group_last_seen?.split(',')[0] || 'Active'}</span>
+                      <Link key={ad.ad_archive_id + idx} href={`/view/${ad.ad_archive_id}?${viewParams.toString()}`} className="group block p-3 rounded-xl transition-all duration-500 hover:bg-zinc-50 hover:shadow-2xl border border-transparent hover:border-zinc-200">
+                        <div className="aspect-[3/4] mb-4 overflow-hidden rounded-lg bg-zinc-50">
+                          <AdCard ad={ad} isRefreshing={refreshingIds.has(ad.ad_archive_id)} />
+                        </div>
+                        <div className="space-y-2 px-1">
+                          <p className="text-[10px] font-black text-zinc-950 truncate uppercase">{ad.page_name}</p>
+                          <p className="text-[9px] font-bold text-zinc-400">ID: {ad.ad_archive_id}</p>
+                          <div className="mt-2 text-[9px] text-zinc-500 flex items-center justify-between">
+                            <span className="font-bold">Total Items:</span>
+                            <span className="tabular-nums">{ad.items ?? ad.duplicates_count ?? '—'}</span>
                           </div>
                         </div>
-                        <div className="mt-2 text-[9px] text-zinc-500 flex items-center justify-between">
-                          <span className="font-bold">ads_groups_test.items</span>
-                          <span className="tabular-nums">{ad.items ?? ad.group_items ?? ad.duplicates_count ?? '—'}</span>
-                        </div>
-                        {ad.ai_description && (
-                          <div className="pt-2 border-t border-zinc-100">
-                            <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Group Description</p>
-                            <p className="text-[9px] text-zinc-600 leading-snug line-clamp-3">
-                              {ad.ai_description.replace(/^\*\*|\*\*$/g, '').replace(/^[^\w\s]+|[^\w\s]+$/g, '')}
-                            </p>
-                          </div>
-                        )}
-                        {ad.concept && (
-                          <div className="pt-2 border-t border-zinc-100">
-                            <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Concept</p>
-                            <p className="text-[9px] text-zinc-700 leading-snug line-clamp-3">
-                              {ad.concept}
-                            </p>
-                          </div>
-                        )}
-                      
-                      </div>
-                    </Link>
+                      </Link>
                     );
-                    });
-                  })()}
+                  })}
                 </div>
               </section>
             ))}
           </div>
         )}
 
-        {/* 6. Simple Pagination */}
         <footer className="mt-32 py-12 border-t border-zinc-100 flex flex-col items-center">
           <div className="flex items-center gap-6">
-            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="text-[10px] font-black uppercase tracking-widest hover:text-zinc-400 disabled:opacity-10 transition-all">Prev</button>
+            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="text-[10px] font-black uppercase tracking-widest disabled:opacity-10">Prev</button>
             <div className="flex items-center gap-4">
-              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Page</span>
               <span className="text-xs font-bold">{currentPage} / {totalPages}</span>
             </div>
-            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="text-[10px] font-black uppercase tracking-widest hover:text-zinc-400 disabled:opacity-10 transition-all">Next</button>
+            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="text-[10px] font-black uppercase tracking-widest disabled:opacity-10">Next</button>
           </div>
         </footer>
       </main>
@@ -513,7 +429,6 @@ function HomeContent(): JSX.Element {
       <style jsx global>{`
         body { background-color: #ffffff; }
         ::-webkit-scrollbar { width: 3px; }
-        ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #E4E4E7; border-radius: 10px; }
       `}</style>
     </div>
