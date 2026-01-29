@@ -7,6 +7,7 @@ export interface Ad {
   ad_text?: string;
   caption?: string;
   image_url?: string;
+  video_storage_path?: string;
   url?: string;
   competitor_niche?: string;
   display_format: 'IMAGE' | 'VIDEO';
@@ -20,6 +21,8 @@ export interface Ad {
   duplicates_count?: number;
   items?: number; // total items count from ads_groups_test
   group_items?: number; // raw `items` value from ads_groups_test table
+  group_first_seen?: string | null;
+  group_last_seen?: string | null;
   status?: 'New' | 'Scaling' | 'Inactive';
   diff_count?: number | null;
   meta_ad_url?: string;

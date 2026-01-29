@@ -4,6 +4,7 @@ export const revalidate = 0;
 import { fetchAdByArchiveId, fetchRelatedAds, fetchGroupRepresentative, getImageUrl } from '@/utils/supabase/db';
 import { RelatedAdsGrid } from '@/components/RelatedAdsGrid';
 import { GroupMetadata } from '@/components/GroupMetadata';
+import MediaDownload from '@/components/MediaDownload';
 import Image from 'next/image';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
@@ -45,6 +46,31 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
 
   const imageUrl = ad.image_url ?? await getImageUrl(ad.ad_archive_id, business.slug);
   const representativeImageUrl = representative ? (representative.image_url ?? await getImageUrl(representative.ad_archive_id, business.slug)) : null;
+  // Build video URLs directly from stored storage path (which already includes business slug)
+  const publicBase = process.env.NEXT_PUBLIC_SUPABASE_URL ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/creatives/` : null;
+  const representativeVideoUrl = representative && representative.video_storage_path && publicBase
+    ? `${publicBase}${representative.video_storage_path}`
+    : null;
+
+  // Main ad video URL (if stored)
+  const videoUrl = ad.video_storage_path && publicBase ? `${publicBase}${ad.video_storage_path}` : null;
+  // Check if video is actually accessible (HEAD) to avoid broken players; fallback to image if not
+  let videoAvailable = false;
+  let videoCheckWarn = false;
+  if (videoUrl) {
+    try {
+      const headRes = await fetch(videoUrl, { method: 'HEAD' });
+      if (headRes.ok) {
+        const ct = headRes.headers.get('content-type') || '';
+        if (ct.startsWith('video/')) videoAvailable = true;
+        else videoAvailable = true; // allow even if content-type missing
+      } else {
+        videoCheckWarn = true;
+      }
+    } catch (e) {
+      videoCheckWarn = true;
+    }
+  }
   const groupSize = ad.duplicates_count || (hasGroup ? relatedAds.length + 1 : 1);
 
   // Get return URL from searchParams
@@ -76,6 +102,14 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
             <a href={`https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}`} target="_blank" className="h-9 px-4 bg-zinc-900 text-white rounded-lg flex items-center text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-800 transition-all">
               Meta Library
             </a>
+            {/* Client-side automatic download component */}
+            <MediaDownload
+              imageUrl={imageUrl}
+              videoUrl={videoUrl}
+              imageName={`${ad.ad_archive_id}.jpg`}
+              videoName={`${ad.ad_archive_id}.mp4`}
+              videoAvailable={videoAvailable}
+            />
           </div>
         </header>
 
@@ -84,7 +118,14 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
           {/* Left Column: Media & Core Info */}
           <div className="lg:col-span-7 space-y-10">
             <section className="relative aspect-video bg-zinc-50 rounded-2xl overflow-hidden border border-zinc-100">
-              {imageUrl && <Image src={imageUrl} alt={ad.title || ""} fill className="object-contain" unoptimized />}
+              {videoUrl && videoAvailable ? (
+                <video src={videoUrl} controls className="h-full w-full object-contain" />
+              ) : (
+                imageUrl && <Image src={imageUrl} alt={ad.title || ""} fill className="object-contain" unoptimized />
+              )}
+              {videoUrl && videoCheckWarn && (
+                <div className="absolute top-4 right-4 bg-yellow-50 text-yellow-800 px-3 py-1 rounded-md text-sm font-semibold">Video not available — showing image</div>
+              )}
             </section>
 
             <section className="space-y-6">
@@ -163,8 +204,12 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
               <section className="space-y-4">
                 <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Representative</h3>
                 <div className="group flex items-center gap-4 p-4 bg-white border border-zinc-100 rounded-2xl hover:border-zinc-300 transition-all">
-                  <div className="relative h-16 w-16 rounded-xl overflow-hidden bg-zinc-50">
-                    <Image src={representativeImageUrl || ''} alt="" fill className="object-cover" unoptimized />
+                  <div className="relative h-16 w-16 rounded-xl overflow-hidden bg-zinc-50 flex items-center justify-center">
+                    {representativeVideoUrl ? (
+                      <video src={representativeVideoUrl} controls className="h-full w-full object-cover" />
+                    ) : (
+                      <Image src={representativeImageUrl || ''} alt="" fill className="object-cover" unoptimized />
+                    )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-bold text-zinc-900 truncate">{representative.title || 'Untitled'}</p>

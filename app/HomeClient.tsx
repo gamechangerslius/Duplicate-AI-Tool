@@ -36,6 +36,7 @@ function HomeContent(): JSX.Element {
   
   const [displayFormat, setDisplayFormat] = useState<'ALL' | 'IMAGE' | 'VIDEO'>('ALL');
   const [ads, setAds] = useState<Ad[]>([]);
+  const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const [pageNames, setPageNames] = useState<{ name: string; count: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [authCheckLoading, setAuthCheckLoading] = useState(true);
@@ -56,6 +57,8 @@ function HomeContent(): JSX.Element {
   const [sortBy, setSortBy] = useState<SortByType>('newest');
   const [duplicatesRange, setDuplicatesRange] = useState<[number, number]>([0, 100]);
   const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({ min: 0, max: 100 });
+  const [showDuplicatesSlider, setShowDuplicatesSlider] = useState(false);
+  const duplicatesInitialized = useRef(false);
   
   // Track if we've initialized from URL
   const initialized = useRef(false);
@@ -126,7 +129,13 @@ function HomeContent(): JSX.Element {
         
         // Fetch duplicates stats for slider range
         const stats = await fetchDuplicatesStats(initialBusinessId);
-        setDuplicatesStats(stats);
+        // Ensure min is at least 1
+        const safeStats = { min: Math.max(1, stats.min), max: Math.max(1, stats.max) };
+        setDuplicatesStats(safeStats);
+        if (!duplicatesInitialized.current) {
+          setDuplicatesRange([safeStats.min, safeStats.max]);
+          duplicatesInitialized.current = true;
+        }
         setPageNames(pages);
       }
       
@@ -173,7 +182,12 @@ function HomeContent(): JSX.Element {
     });
     
     const newUrl = queryString ? `/?${queryString}` : '/';
-    router.replace(newUrl);
+    // Use history.replaceState to update the URL without causing scroll/top navigation
+    if (typeof window !== 'undefined' && window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', newUrl);
+    } else {
+      router.replace(newUrl);
+    }
   }, [businessId, displayFormat, selectedPage, startDate, endDate, aiDescription, sortBy, currentPage, duplicatesRange, buildQueryString, router]);
   
   // Fetch page names and duplicates stats when businessId changes
@@ -184,14 +198,20 @@ function HomeContent(): JSX.Element {
         setPageNames(pages);
         
         const stats = await fetchDuplicatesStats(businessId);
-        setDuplicatesStats(stats);
-        setDuplicatesRange([stats.min, stats.max]);
+        const safeStats = { min: Math.max(1, stats.min), max: Math.max(1, stats.max) };
+        setDuplicatesStats(safeStats);
+        if (!duplicatesInitialized.current) {
+          setDuplicatesRange([safeStats.min, safeStats.max]);
+          duplicatesInitialized.current = true;
+        }
       })();
     }
   }, [businessId]);
 
   const loadData = useCallback(async () => {
     if (!businessId) return;
+    // mark current ads as refreshing so cards can show per-card spinner
+    setRefreshingIds(new Set(ads.map(a => a.ad_archive_id)));
     setLoading(true);
     const duplicatesFilter = (duplicatesRange[0] > duplicatesStats.min || duplicatesRange[1] < duplicatesStats.max) ? {
       min: duplicatesRange[0],
@@ -207,42 +227,14 @@ function HomeContent(): JSX.Element {
       sortBy: sortBy || undefined,
       duplicatesRange: duplicatesFilter
     }, { page: currentPage, perPage: PER_PAGE });
-    // Batch-fetch authoritative items counts for the page's vector_groups
-    try {
-      const supabase = createClient();
-      const vectorGroups = Array.from(new Set(data.map(a => String(a.vector_group)).filter(v => v !== 'null' && v !== 'undefined' && v !== '-1' && v !== '')));
-      if (vectorGroups.length > 0) {
-        const { data: rows } = await supabase
-          .from('ads')
-          .select('vector_group')
-          .in('vector_group', vectorGroups as any)
-          .eq('business_id', businessId);
-
-        const countsMap = new Map<string, number>();
-        (rows || []).forEach((r: any) => {
-          const vg = String(r.vector_group);
-          countsMap.set(vg, (countsMap.get(vg) || 0) + 1);
-        });
-
-        const merged = data.map(a => ({
-          ...a,
-          items: typeof a.items === 'number' ? a.items : (a.vector_group ? (countsMap.get(String(a.vector_group)) ?? a.items) : a.items)
-        }));
-
-        setAds(merged);
-
-        // Debug log for problematic group/ad
-        const sample = merged.find(m => String(m.vector_group) === '28120828146817396' || m.ad_archive_id === '1001469877987489');
-        if (sample) console.log('HomeClient: sample merged ad for debug', sample, { countsMapSample: countsMap.get('28120828146817396') });
-      } else {
-        setAds(data);
-      }
-    } catch (err) {
-      console.error('HomeClient: failed to batch-fetch group counts', err);
-      setAds(data);
-    }
+    // Use `items` provided by the server (ads_groups_test.items is authoritative)
+    setAds(data);
     setTotalPages(Math.ceil(total / PER_PAGE));
+    // clear refresh indicators
+    setRefreshingIds(new Set());
     setLoading(false);
+    // Show range selector only after we have ads from the server
+    setShowDuplicatesSlider((data || []).length > 0);
   }, [businessId, selectedPage, startDate, endDate, displayFormat, aiDescription, currentPage, sortBy, duplicatesRange, duplicatesStats]);
 
   useEffect(() => { if (businessId) loadData(); }, [loadData, businessId]);
@@ -283,11 +275,25 @@ function HomeContent(): JSX.Element {
               value={businessId || ''} 
               onChange={(e) => {
                 const newBizId = e.target.value;
-                if (canEditBusiness(newBizId)) {
-                  setBusinessId(newBizId);
-                } else {
+                if (!canEditBusiness(newBizId)) {
                   alert('You can only view this business. Contact owner or admin for edit access.');
+                  return;
                 }
+
+                // If switching to a different business, reset all filters to defaults
+                if (newBizId && newBizId !== businessId) {
+                  setDisplayFormat('ALL');
+                  setSelectedPage('');
+                  setStartDate('');
+                  setEndDate('');
+                  setAiDescription('');
+                  setSortBy('newest');
+                  setCurrentPage(1);
+                  // Allow duplicates range to be re-initialized for the new business
+                  duplicatesInitialized.current = false;
+                }
+
+                setBusinessId(newBizId);
               }}
               className="h-10 px-4 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold focus:ring-1 focus:ring-zinc-200 outline-none transition-all cursor-pointer"
             >
@@ -344,7 +350,8 @@ function HomeContent(): JSX.Element {
         </div>
 
         {/* Duplicates Range Filter */}
-        <div className="mb-6 bg-white border border-zinc-200 rounded-lg p-4 max-w-md">
+        {showDuplicatesSlider ? (
+          <div className="mb-6 bg-white border border-zinc-200 rounded-lg p-4 max-w-md">
           <div className="flex items-center justify-between mb-3">
             <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Duplicates</label>
             <span className="text-[10px] font-bold text-zinc-900 tabular-nums">
@@ -355,8 +362,8 @@ function HomeContent(): JSX.Element {
             value={duplicatesRange}
             onChange={(_, newValue) => setDuplicatesRange(newValue as [number, number])}
             valueLabelDisplay="auto"
-            min={duplicatesStats.min}
-            max={duplicatesStats.max}
+            min={Math.max(1, duplicatesStats.min)}
+            max={Math.max(1, duplicatesStats.max)}
             sx={{
               color: '#18181b',
               height: 3,
@@ -381,11 +388,12 @@ function HomeContent(): JSX.Element {
               },
             }}
           />
-          <div className="flex justify-between mt-1">
-            <span className="text-[9px] text-zinc-400 tabular-nums">{duplicatesStats.min}</span>
-            <span className="text-[9px] text-zinc-400 tabular-nums">{duplicatesStats.max}</span>
+            <div className="flex justify-between mt-1">
+              <span className="text-[9px] text-zinc-400 tabular-nums">{Math.max(1, duplicatesStats.min)}</span>
+              <span className="text-[9px] text-zinc-400 tabular-nums">{Math.max(1, duplicatesStats.max)}</span>
+            </div>
           </div>
-        </div>
+        ) : null}
 
         {/* 4. CONTENT ACTION BAR (Toggle & Counter) */}
         <div className="flex items-center justify-between py-6 mb-8 border-y border-zinc-50">
@@ -442,7 +450,7 @@ function HomeContent(): JSX.Element {
                     return (
                     <Link key={idx} href={`/view/${ad.ad_archive_id}?${viewParams.toString()}`} className="group block p-3 rounded-xl transition-all duration-500 hover:bg-zinc-50 hover:shadow-2xl hover:shadow-black/15 hover:-translate-y-2 border border-transparent hover:border-zinc-200">
                       <div className="aspect-[3/4] mb-4 overflow-hidden rounded-lg bg-zinc-50">
-                        <AdCard ad={ad} />
+                        <AdCard ad={ad} isRefreshing={refreshingIds.has(ad.ad_archive_id)} />
                       </div>
                       <div className="space-y-2 px-1">
                         <p className="text-[10px] font-black text-zinc-950 truncate uppercase tracking-tight">{ad.page_name}</p>
@@ -450,16 +458,16 @@ function HomeContent(): JSX.Element {
                         <div className="text-[9px] text-zinc-500 space-y-1">
                           <div className="flex justify-between">
                             <span className="font-bold">Start:</span>
-                            <span>{ad.start_date_formatted?.split(',')[0] || 'N/A'}</span>
+                            <span>{ad.group_first_seen?.split(',')[0] || 'N/A'}</span>
                           </div>
                           <div className="flex justify-between">
                             <span className="font-bold">End:</span>
-                            <span>{ad.end_date_formatted?.split(',')[0] || 'Active'}</span>
+                            <span>{ad.group_last_seen?.split(',')[0] || 'Active'}</span>
                           </div>
                         </div>
                         <div className="mt-2 text-[9px] text-zinc-500 flex items-center justify-between">
                           <span className="font-bold">ads_groups_test.items</span>
-                          <span className="tabular-nums">{typeof ad.group_items === 'number' ? ad.group_items : '—'}</span>
+                          <span className="tabular-nums">{ad.items ?? ad.group_items ?? ad.duplicates_count ?? '—'}</span>
                         </div>
                         {ad.ai_description && (
                           <div className="pt-2 border-t border-zinc-100">

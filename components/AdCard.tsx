@@ -5,9 +5,10 @@ import Image from 'next/image';
 
 interface AdCardProps {
   ad: Ad;
+  isRefreshing?: boolean;
 }
 
-export function AdCard({ ad }: AdCardProps) {
+export function AdCard({ ad, isRefreshing }: AdCardProps) {
   const isVideo = ad.display_format === 'VIDEO';
   const imageUrl = ad.image_url || '';
   const isNewGroup = !!ad.group_created_at && (Date.now() - new Date(ad.group_created_at).getTime() <= 24 * 60 * 60 * 1000);
@@ -18,7 +19,7 @@ export function AdCard({ ad }: AdCardProps) {
   const loadingItems = false;
 
   return (
-    <div className="group bg-white rounded-2xl border border-zinc-100 transition-all duration-500 hover:shadow-2xl hover:shadow-zinc-200/50 hover:-translate-y-1 overflow-hidden cursor-pointer h-full flex flex-col">
+    <div className="relative group bg-white rounded-2xl border border-zinc-100 transition-all duration-500 hover:shadow-2xl hover:shadow-zinc-200/50 hover:-translate-y-1 overflow-hidden cursor-pointer h-full flex flex-col">
       
       {/* Media Section */}
       <div className="relative aspect-[4/5] bg-zinc-50 flex-shrink-0 overflow-hidden">
@@ -72,6 +73,13 @@ export function AdCard({ ad }: AdCardProps) {
 
       {/* Info Section */}
       <div className="p-4 flex-1 flex flex-col gap-3">
+
+        {/* Spinner overlay when parent indicates refresh */}
+        {isRefreshing && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
+          </div>
+        )}
 
 
         {ad.competitor_niche && (

@@ -2,15 +2,15 @@
 
 import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 // SSE log hook
-function useSSELogs(taskId: string | null, onLog: (msg: string) => void) {
+function useSSELogs(base: string, taskId: string | null, onLog: (msg: string) => void) {
   useEffect(() => {
     if (!taskId) return;
-    const evtSource = new EventSource(`/api/import-json/logs/${taskId}`);
+    const evtSource = new EventSource(`/api/${base}/logs/${taskId}`);
     evtSource.onmessage = (event) => {
       onLog(event.data);
     };
     return () => evtSource.close();
-  }, [taskId, onLog]);
+  }, [base, taskId, onLog]);
 }
 import React from "react";
 import { createClient } from '@/utils/supabase/client';
@@ -33,7 +33,9 @@ export default function SetupPage() {
   const [importStopped, setImportStopped] = useState(false);
   const [maxAdsGlobal, setMaxAdsGlobal] = useState(100);
   const [jsonConfirm, setJsonConfirm] = useState<{ items: any[]; fileName: string }|null>(null);
+  const [jsonFiles, setJsonFiles] = useState<File[] | null>(null);
   const [importTaskId, setImportTaskId] = useState<string | null>(null);
+  const [forwardTaskId, setForwardTaskId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   
@@ -104,22 +106,87 @@ export default function SetupPage() {
 
   // JSON upload handler (import-json API with confirm)
   const handleJsonUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    addLog('info', '📁 Reading JSON file...');
+    addLog('info', '📁 Reading JSON file(s)...');
+    const files = Array.from(e.target.files || []);
+    if (!files.length || !selectedBusinessId) return;
+    try {
+      // Read all files as text and parse JSON
+      const parsed = await Promise.all(files.map(async (file) => {
+        const txt = await file.text();
+        const json = JSON.parse(txt);
+        if (!Array.isArray(json)) throw new Error(`${file.name} is not a JSON array`);
+        return { name: file.name, items: json };
+      }));
+
+      const total = parsed.reduce((s, p) => s + (p.items?.length || 0), 0);
+      if (total === 0) {
+        addLog('error', '❌ JSON files contain no items');
+        e.target.value = '';
+        return;
+      }
+      const combined = parsed.flatMap(p => p.items || []);
+      addLog('info', `✅ Parsed ${total} creatives from ${files.length} file(s). Awaiting confirmation...`);
+      setJsonFiles(files);
+      setJsonConfirm({ items: combined, fileName: parsed.map(p => p.name).join(', ') });
+    } catch (err) {
+      addLog('error', `❌ Failed to parse JSON: ${(err && (err as any).message) || String(err)}`);
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  // CSV upload handler - parses CSV and extracts URLs and optional maxAds column
+  const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    addLog('info', '📁 Reading CSV file...');
     const file = e.target.files?.[0];
-    if (!file || !selectedBusinessId) return;
+    if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        addLog('info', '🔍 Parsing JSON...');
-        const json = JSON.parse(event.target?.result as string);
-        if (!Array.isArray(json) || !json.length) {
-          addLog('error', '❌ JSON must be a non-empty array');
+        const text = String(event.target?.result || '');
+        // Split into lines and parse simple CSV (commas, optional header)
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        if (lines.length === 0) {
+          addLog('error', '❌ CSV is empty');
           return;
         }
-        addLog('info', `✅ JSON parsed. Found ${json.length} creatives. Awaiting confirmation...`);
-        setJsonConfirm({ items: json, fileName: file.name });
-      } catch {
-        addLog('error', '❌ Failed to parse JSON');
+        // Detect header - common names: url, link, max, maxAds
+        const firstCols = lines[0].split(',').map(c => c.trim().toLowerCase());
+        let startIdx = 0;
+        let hasHeader = false;
+        if (firstCols.includes('url') || firstCols.includes('link') || firstCols.includes('ad_url')) {
+          hasHeader = true;
+          startIdx = 1;
+        }
+
+        const parsed: LinkRow[] = [];
+        for (let i = startIdx; i < lines.length; i++) {
+          const cols = lines[i].split(',').map(c => c.trim()).filter(Boolean);
+          if (cols.length === 0) continue;
+          let url = cols[0];
+          let max = maxAdsGlobal;
+          // If header present and has maxads column name, find its index
+          if (hasHeader) {
+            const urlIdx = firstCols.indexOf('url') >= 0 ? firstCols.indexOf('url') : 0;
+            const maxIdx = firstCols.indexOf('maxads') >= 0 ? firstCols.indexOf('maxads') : (firstCols.indexOf('max') >= 0 ? firstCols.indexOf('max') : -1);
+            url = (cols[urlIdx] || cols[0]) as string;
+            if (maxIdx >= 0 && cols[maxIdx]) max = Number(cols[maxIdx]) || maxAdsGlobal;
+          } else {
+            // No header — assume first col is url, second optional max
+            url = cols[0];
+            if (cols[1]) max = Number(cols[1]) || maxAdsGlobal;
+          }
+          parsed.push({ id: uid(), url, maxAds: max });
+        }
+
+        if (parsed.length === 0) {
+          addLog('error', '❌ No valid rows found in CSV');
+          return;
+        }
+        setRows(parsed.map(p => ({ id: p.id, url: p.url, maxAds: p.maxAds ?? maxAdsGlobal })));
+        addLog('success', `✅ Parsed ${parsed.length} rows from CSV`);
+      } catch (err) {
+        addLog('error', '❌ Failed to parse CSV');
       }
     };
     reader.readAsText(file);
@@ -135,26 +202,40 @@ export default function SetupPage() {
     // Генерируем taskId (можно заменить на uuid или серверный id)
     const taskId = `task_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     setImportTaskId(taskId);
-    const items = jsonConfirm.items.slice(0, maxAdsGlobal);
-    addLog('info', `⏳ Sending ${items.length} creatives to server for import (taskId: ${taskId})...`);
+    addLog('info', `⏳ Sending creatives to server for import (taskId: ${taskId})...`);
     try {
-      const res = await fetch('/api/import-json', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items, businessId: selectedBusinessId, maxAds: maxAdsGlobal, taskId })
-      });
-      if (res.ok) {
-        addLog('success', '✅ Import complete! Creatives are being processed and will appear in the gallery soon.');
-        setSuccessMsg('JSON imported to DB. Creatives will appear after processing.');
+      if (!jsonFiles || jsonFiles.length === 0) {
+        // fallback: send items as JSON if files missing
+        const items = jsonConfirm?.items.slice(0, maxAdsGlobal) || [];
+        const res = await fetch('/api/import-json', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items, businessId: selectedBusinessId, maxAds: maxAdsGlobal, taskId })
+        });
+        if (!res.ok) throw new Error('Import failed');
       } else {
-        const err = await res.json();
-        addLog('error', `❌ Import failed: ${err.message || res.status}`);
-        setError(err.message || 'Import failed');
+        const fd = new FormData();
+        jsonFiles.slice(0, 20).forEach((f) => fd.append('files', f));
+        fd.append('businessId', selectedBusinessId as string);
+        fd.append('maxAds', String(maxAdsGlobal));
+        fd.append('taskId', taskId);
+        const res = await fetch('/api/import-json', {
+          method: 'POST',
+          body: fd
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ message: 'Import failed' }));
+          throw new Error(err.message || 'Import failed');
+        }
       }
+      addLog('success', '✅ Import started! Creatives are being processed and will appear in the gallery soon.');
+      setSuccessMsg('JSON imported to DB. Creatives will appear after processing.');
     } catch (e) {
-      addLog('error', `❌ Import failed: ${(e && typeof e === 'object' && 'message' in e) ? e.message : String(e)}`);
+      addLog('error', `❌ Import failed: ${(e && typeof e === 'object' && 'message' in e) ? (e as any).message : String(e)}`);
+      setError((e as any)?.message || 'Import failed');
     } finally {
       setSending(false);
+      setJsonFiles(null);
     }
   };
 
@@ -176,8 +257,19 @@ export default function SetupPage() {
     }
   };
   // Подписка на SSE логи по importTaskId
-  useSSELogs(importTaskId, (msg) => {
+  useSSELogs('import-json', importTaskId, (msg) => {
     if (msg.includes('⏹️ Import cancelled by user.')) {
+      setImportStopped(true);
+      setSending(false);
+      addLog('info', msg);
+    } else {
+      addLog('info', msg);
+    }
+  });
+
+  // Подписка на SSE логи для forward-webhook (parser)
+  useSSELogs('forward-webhook', forwardTaskId, (msg) => {
+    if (msg.includes('⏹️')) {
       setImportStopped(true);
       setSending(false);
       addLog('info', msg);
@@ -213,8 +305,11 @@ export default function SetupPage() {
       return;
     }
     
+    // generate a forward taskId and subscribe to logs
+    const taskId = `fw_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    setForwardTaskId(taskId);
     setSending(true);
-    addLog('info', `🚀 Starting scrape for ${nonEmptyUrls.length} links...`);
+    addLog('info', `🚀 Starting scrape for ${nonEmptyUrls.length} links... (task ${taskId})`);
     
     try {
       const linksPayload = rows
@@ -224,7 +319,7 @@ export default function SetupPage() {
       const res = await fetch('/api/forward-webhook', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ links: linksPayload, businessId: selectedBusinessId })
+        body: JSON.stringify({ links: linksPayload, businessId: selectedBusinessId, taskId })
       });
       if (!res.ok) throw new Error('Request failed');
       addLog('success', '✅ Data sent to Apify successfully');
@@ -312,10 +407,10 @@ export default function SetupPage() {
                   <input
                     type="number"
                     min={1}
-                    max={9999}
+                    max={99999}
                     value={maxAdsGlobal}
                     onChange={e => {
-                      const val = Math.max(1, Math.min(9999, Number(e.target.value)));
+                      const val = Math.max(1, Math.min(99999, Number(e.target.value)));
                       setMaxAdsGlobal(val);
                       updateAllMaxAds(val);
                     }}
@@ -331,13 +426,20 @@ export default function SetupPage() {
                                 <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">Confirm JSON Import</h2>
                               </div>
                               <div className="space-y-3 text-base text-slate-700">
-                                <div className="break-all"><span className="font-semibold text-slate-500">File:</span> <span className="font-mono text-indigo-700 break-all inline-block max-w-full align-middle">{jsonConfirm.fileName}</span></div>
+                                <div>
+                                  <span className="font-semibold text-slate-500">Files:</span>
+                                  <div className="mt-2 max-h-40 overflow-auto bg-slate-50 p-2 rounded-md border border-slate-100">
+                                    {jsonConfirm.fileName.split(',').map((name, i) => (
+                                      <div key={i} className="text-sm font-mono text-indigo-700 break-words py-0.5">{name.trim()}</div>
+                                    ))}
+                                  </div>
+                                </div>
                                 <div><span className="font-semibold text-slate-500">Total creatives in file:</span> <span className="font-bold text-slate-900">{jsonConfirm.items.length}</span></div>
                                 <div><span className="font-semibold text-slate-500">Will be imported:</span> <span className="font-bold text-indigo-600">{Math.min(jsonConfirm.items.length, maxAdsGlobal)}</span></div>
                                 <div className="break-all"><span className="font-semibold text-slate-500">Business:</span> <span className="font-bold text-slate-900 break-all inline-block max-w-full align-middle">{businesses.find(b => b.id === selectedBusinessId)?.name || selectedBusinessId}</span></div>
                               </div>
-                              <div className="flex gap-4 mt-8 justify-end">
-                                <button onClick={() => setJsonConfirm(null)} className="px-5 py-2.5 rounded-xl bg-slate-100 text-slate-600 font-bold hover:bg-slate-200 border border-slate-200 shadow-sm transition-all">Cancel</button>
+                                <div className="flex gap-4 mt-8 justify-end">
+                                <button onClick={() => { setJsonConfirm(null); setJsonFiles(null); }} className="px-5 py-2.5 rounded-xl bg-slate-100 text-slate-600 font-bold hover:bg-slate-200 border border-slate-200 shadow-sm transition-all">Cancel</button>
                                 <button onClick={confirmJsonImport} className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 shadow-lg transition-all" disabled={sending || importStopped}>Import</button>
                               </div>
                             </div>
@@ -351,7 +453,11 @@ export default function SetupPage() {
                   </button>
                   <label className="px-4 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm cursor-pointer">
                     Upload JSON
-                    <input type="file" accept="application/json" onChange={handleJsonUpload} className="hidden" />
+                    <input type="file" accept="application/json" multiple onChange={handleJsonUpload} className="hidden" />
+                  </label>
+                  <label className="px-4 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm cursor-pointer">
+                    Upload CSV
+                    <input type="file" accept="text/csv,.csv" onChange={handleCsvUpload} className="hidden" />
                   </label>
                 </div>
               </div>
@@ -385,7 +491,7 @@ export default function SetupPage() {
                           <input
                             type="number"
                             min={1}
-                            max={100}
+                            max={row.maxAds ?? 100}
                             value={row.maxAds ?? 100}
                             onChange={(e) => updateRowMax(row.id, Number(e.target.value))}
                             className="w-full px-3 py-2 text-sm bg-transparent border border-slate-200 rounded-lg outline-none focus:border-indigo-300 focus:bg-white transition-all"

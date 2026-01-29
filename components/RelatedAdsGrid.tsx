@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from 'react';
+import { AdCard } from '@/components/AdCard';
 import Image from 'next/image';
 import type { Ad } from '@/lib/types';
 import { getCreativeUrl } from '@/utils/supabase/db';
@@ -23,12 +24,11 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
   const [cursor, setCursor] = useState<string | null>(ads.length ? ads[ads.length - 1].ad_archive_id : null);
   const [hasMore, setHasMore] = useState(() => {
     const initialVisible = Math.min(6, ads.length);
-    const total = groupSize || ads.length;
-    if (initialVisible >= total) return false;
-    if (ads.length > 6) return true;
-    return true;
+    const total = groupSize ?? ads.length;
+    return initialVisible < total;
   });
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+  const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
 
   const dedupeByGroup = (list: Ad[]) => {
     // For related-ads we should not dedupe by vector_group (all items share same group).
@@ -72,14 +72,8 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
     setQueued(rest);
     setCursor(initialVisible.length ? initialVisible[initialVisible.length - 1].ad_archive_id : null);
 
-    const total = groupSize || sorted.length;
-    if (initialVisible.length >= total) {
-      setHasMore(false);
-    } else if (rest.length > 0) {
-      setHasMore(true);
-    } else {
-      setHasMore(true);
-    }
+    const total = groupSize ?? sorted.length;
+    setHasMore(initialVisible.length < total);
   }, [ads, sortByStatus, groupSize]);
 
   useEffect(() => {
@@ -90,6 +84,7 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
       if (adsNeedingImages.length === 0) return;
 
       console.log(`[RelatedAdsGrid] Loading ${adsNeedingImages.length} images in parallel...`);
+      setLoadingIds(new Set(adsNeedingImages.map(a => a.ad_archive_id)));
       
       // Load all images in parallel
       const imagePromises = adsNeedingImages.map(async (ad) => {
@@ -117,6 +112,8 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
         setImageUrls(prev => ({ ...prev, ...newUrls }));
         console.log(`[RelatedAdsGrid] ✓ Loaded ${Object.keys(newUrls).length} images`);
       }
+      // clear loading ids for these ads
+      setLoadingIds(new Set());
     };
     
     loadImages();
@@ -138,14 +135,10 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
       setItems(updated);
       setCursor(updated.length ? updated[updated.length - 1].ad_archive_id : null);
 
-      const total = updated.length;
-      if (groupSize && total >= groupSize) {
-        setHasMore(false);
-      } else if (remaining.length > 0) {
-        setHasMore(true);
+      if (groupSize) {
+        setHasMore(updated.length < groupSize);
       } else {
-        // Still allow further fetch
-        setHasMore(true);
+        setHasMore(remaining.length > 0 || updated.length < ads.length);
       }
       return;
     }
@@ -166,9 +159,8 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
         const updated = sortByStatus([...items, ...newItems]);
         setItems(updated);
         setCursor(json.nextCursor || newItems[newItems.length - 1].ad_archive_id);
-        const total = updated.length;
-        if (groupSize && total >= groupSize) {
-          setHasMore(false);
+        if (groupSize) {
+          setHasMore(updated.length < groupSize);
         } else {
           setHasMore(Boolean(json.hasMore));
         }
@@ -186,50 +178,18 @@ export function RelatedAdsGrid({ ads, groupSize, vectorGroup, currentAdArchiveId
     <div>
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
         {items.map((ad) => (
-          <button
-            key={ad.ad_archive_id}
-            type="button"
-            onClick={() => setSelected(ad)}
-            className={`group text-left ${ad.status === 'Inactive' ? 'opacity-60 saturate-50' : ''}`}
-            aria-label={`Open details for ${ad.ad_archive_id}`}
-          >
-            <div className="bg-white rounded-lg shadow-md hover:shadow-xl transition-shadow duration-300 overflow-hidden">
-              <div className="relative aspect-square bg-slate-100">
-                <Image
-                  src={getImageSrc(ad)}
-                  alt={ad.title || ad.page_name}
-                  fill
-                  className="object-cover group-hover:scale-105 transition-transform duration-300"
-                  unoptimized
-                />
-                {ad.status && (
-                  <div className="absolute top-2 left-2">
-                    {ad.status === 'New' && (
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-semibold shadow-sm">New</span>
-                    )}
-                    {ad.status === 'Scaling' && (
-                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[11px] font-semibold shadow-sm inline-flex items-center gap-1">
-                        <span className="text-[12px]">▲</span> +{ad.diff_count ?? 0}
-                      </span>
-                    )}
-                    {ad.status === 'Inactive' && (
-                      <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[11px] font-semibold shadow-sm">Inactive</span>
-                    )}
-                  </div>
-                )}
+            <button
+              key={ad.ad_archive_id}
+              type="button"
+              onClick={() => setSelected(ad)}
+              className={`group text-left ${ad.status === 'Inactive' ? 'opacity-60 saturate-50' : ''}`}
+              aria-label={`Open details for ${ad.ad_archive_id}`}
+            >
+              <div>
+                <AdCard ad={{ ...ad, image_url: imageUrls[ad.ad_archive_id] || ad.image_url }} isRefreshing={loadingIds.has(ad.ad_archive_id)} />
               </div>
-              <div className="px-3 py-2 border-t border-slate-200 space-y-1">
-                <div className="text-xs text-slate-900 font-medium truncate" title={ad.title || 'Untitled'}>
-                  {ad.title || 'Untitled'}
-                </div>
-                <div className="text-[11px] text-slate-600 truncate" title={ad.ad_archive_id}>
-                  {ad.ad_archive_id}
-                </div>
-                <div className="text-[11px] text-slate-500 truncate" title={ad.start_date_formatted || undefined}> </div>
-              </div>
-            </div>
-          </button>
-        ))}
+            </button>
+          ))}
       </div>
 
       {hasMore && (
