@@ -1,6 +1,7 @@
 "use client";
 
 import { type Ad } from '@/lib/types';
+import { fetchDuplicatesStats } from '@/utils/supabase/db';
 import Image from 'next/image';
 
 interface AdCardProps {
@@ -13,9 +14,8 @@ export function AdCard({ ad, isRefreshing }: AdCardProps) {
   const imageUrl = ad.image_url || '';
   const isNewGroup = !!ad.group_created_at && (Date.now() - new Date(ad.group_created_at).getTime() <= 24 * 60 * 60 * 1000);
   const newCount = ad.new_count || 0;
-
   // Items should be provided by parent; display ad.items directly.
-  const itemsCount = typeof ad.items === 'number' ? ad.items : null;
+  const itemsCount = ad.items;
   const loadingItems = false;
 
   return (
@@ -47,7 +47,7 @@ export function AdCard({ ad, isRefreshing }: AdCardProps) {
             )}
             {(itemsCount || itemsCount === 0) && (
               <div className="bg-white/90 backdrop-blur-md border border-zinc-200 text-zinc-900 text-[9px] px-2 py-1 rounded-full font-bold uppercase tracking-tighter shadow-sm">
-                {`${itemsCount} Duplicates`}
+                {`${ad.duplicates_count} Duplicates`}
               </div>
             )}
           </div>

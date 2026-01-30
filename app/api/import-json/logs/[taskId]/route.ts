@@ -1,4 +1,7 @@
 import { NextRequest } from "next/server";
+
+// Run SSE streaming in Node runtime to avoid Edge/fs and long-request timeouts
+export const runtime = 'nodejs';
 import { getLogs, clearLogs } from "@/utils/sse-logs";
 import { isCancelled } from "@/utils/import-cancel";
 

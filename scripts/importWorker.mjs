@@ -1,7 +1,7 @@
 // scripts/importWorker.mjs
 // Node.js worker for import tasks (run with: node scripts/importWorker.mjs)
 import { parentPort, workerData } from 'worker_threads';
-import { isCancelledFile, clearCancelFile } from '../utils/import-cancel-file.js';
+const { isCancelledFile, clearCancelFile } = (await import(new URL('../utils/import-cancel-file.js', import.meta.url).href));
 import { createClient } from '@supabase/supabase-js';
 
 function sendLog(taskId, message) {

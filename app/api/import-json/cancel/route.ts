@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 
+// Ensure this route runs in the Node runtime so `fs` is available
+export const runtime = 'nodejs';
+
 // Import the runningWorkers map from the main import-json route
 
 import { requestCancelFile } from "@/utils/import-cancel-file";

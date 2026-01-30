@@ -1,292 +1,266 @@
 "use client";
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+import { useState, useEffect, useRef, useMemo, Suspense } from "react";
+import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
+import { LocalizationProvider, DatePicker } from "@mui/x-date-pickers";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import { enUS } from "@mui/x-date-pickers/locales";
+import { Slider } from "@mui/material";
+import dayjs from "dayjs";
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import Link from 'next/link';
-import { useSearchParams, useRouter } from 'next/navigation';
-import { LocalizationProvider, DatePicker } from '@mui/x-date-pickers';
-import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
-import { enUS } from '@mui/x-date-pickers/locales';
-import { Slider } from '@mui/material';
-import dayjs from 'dayjs';
+// TanStack Query Hooks
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useAds } from "@/hooks/useAds";
+import { usePageNames } from "@/hooks/usePageNames";
+import { useDuplicatesStats } from "@/hooks/useDuplicatesStats";
 
-import { fetchAds, fetchPageNames, fetchDuplicatesStats } from '@/utils/supabase/db';
-import { isUserAdmin } from '@/utils/supabase/admin';
-import type { Ad } from '@/lib/types';
-import { AdCard } from '@/components/AdCard';
-import { ViewToggle } from '@/components/ViewToggle';
-import { UserMenu } from '@/components/UserMenu';
-import { createClient } from '@/utils/supabase/client';
+// Components & Utils
+import { isUserAdmin } from "@/utils/supabase/admin";
+import { createClient } from "@/utils/supabase/client";
+import { AdCard } from "@/components/AdCard";
+import { ViewToggle } from "@/components/ViewToggle";
+import { UserMenu } from "@/components/UserMenu";
 
 const PER_PAGE = 24;
 
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 60 * 5,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+
 export default function HomeClient() {
   return (
-    <LocalizationProvider dateAdapter={AdapterDayjs} localeText={enUS.components.MuiLocalizationProvider.defaultProps.localeText}>
-      <HomeContent />
-    </LocalizationProvider>
+    <QueryClientProvider client={queryClient}>
+      <LocalizationProvider
+        dateAdapter={AdapterDayjs}
+        localeText={
+          enUS.components.MuiLocalizationProvider.defaultProps.localeText
+        }
+      >
+        <Suspense
+          fallback={
+            <div className="min-h-screen flex items-center justify-center bg-white">
+              <div className="w-4 h-4 border-2 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
+            </div>
+          }
+        >
+          <HomeContent />
+        </Suspense>
+      </LocalizationProvider>
+    </QueryClientProvider>
   );
 }
 
 function HomeContent(): JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
-  
-  const [displayFormat, setDisplayFormat] = useState<'ALL' | 'IMAGE' | 'VIDEO'>('ALL');
-  const [ads, setAds] = useState<Ad[]>([]);
-  const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
-  const [pageNames, setPageNames] = useState<{ name: string; count: number }[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [authCheckLoading, setAuthCheckLoading] = useState(true);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+
+  // States
+  const [displayFormat, setDisplayFormat] = useState<"ALL" | "IMAGE" | "VIDEO">("ALL");
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [businesses, setBusinesses] = useState<any[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [authCheckLoading, setAuthCheckLoading] = useState(true);
   const [ownedBusinessIds, setOwnedBusinessIds] = useState<string[]>([]);
-  const [userId, setUserId] = useState<string | null>(null);
+  
+  const { data: stats } = useDuplicatesStats(businessId);
 
-  // Filters
-  const [selectedPage, setSelectedPage] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [aiDescription, setAiDescription] = useState('');
-  const [committedAiDescription, setCommittedAiDescription] = useState('');
-  type SortByType = 'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc' | undefined;
-  const [sortBy, setSortBy] = useState<SortByType>('newest');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [selectedPage, setSelectedPage] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [aiDescription, setAiDescription] = useState("");
+  const [committedAiDescription, setCommittedAiDescription] = useState("");
   const [duplicatesRange, setDuplicatesRange] = useState<[number, number]>([0, 100]);
   const [committedDuplicatesRange, setCommittedDuplicatesRange] = useState<[number, number]>([0, 100]);
-  const [duplicatesStats, setDuplicatesStats] = useState<{ min: number; max: number }>({ min: 0, max: 100 });
-  const [showDuplicatesSlider, setShowDuplicatesSlider] = useState(false);
-  
-  // Refs for navigation control
-  const duplicatesInitialized = useRef(false);
-  const initialized = useRef(false);
-  const suppressNextLoad = useRef(false);
-  const popHandledAt = useRef<number | null>(null);
-  const duplicatesTouched = useRef(false);
 
-  const buildQueryString = useCallback((params: any) => {
-    const query = new URLSearchParams();
-    if (params.businessId) query.set('businessId', params.businessId);
-    if (params.displayFormat && params.displayFormat !== 'ALL') query.set('displayFormat', params.displayFormat);
-    if (params.selectedPage) query.set('pageName', params.selectedPage);
-    if (params.startDate) query.set('startDate', params.startDate);
-    if (params.endDate) query.set('endDate', params.endDate);
-    if (params.aiDescription) query.set('aiDescription', params.aiDescription);
-    if (params.sortBy && params.sortBy !== 'newest') query.set('sortBy', params.sortBy);
-    if (params.currentPage && params.currentPage > 1) query.set('page', String(params.currentPage));
-    if (params.duplicatesRange) {
-      query.set('minDuplicates', String(params.duplicatesRange[0]));
-      query.set('maxDuplicates', String(params.duplicatesRange[1]));
-    }
-    return query.toString();
-  }, []);
+  const initialized = useRef(false);
+  const lastSelectedBusinessId = useRef<string | null>(null);
+
+  // --- Data Fetching ---
+  const adsQuery = useAds({
+    businessId,
+    pageName: selectedPage || undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+    displayFormat: displayFormat !== "ALL" ? displayFormat : undefined,
+    aiDescription: committedAiDescription || undefined,
+    page: currentPage,
+    perPage: PER_PAGE,
+    duplicatesRange: {
+      min: committedDuplicatesRange[0],
+      max: committedDuplicatesRange[1],
+    },
+  });
+
+  const { data: pageNames = [] } = usePageNames(businessId);
+  const ads = adsQuery.data?.ads || [];
+  const totalPages = Math.ceil((adsQuery.data?.total || 0) / PER_PAGE);
+  const isLoading = adsQuery.isLoading || adsQuery.isFetching;
+
+  const groupedDates = useMemo(() => {
+    const dates = Array.from(
+      new Set(ads.map((a) => a.created_at?.split("T")[0]).filter(Boolean)),
+    );
+    return dates.sort((a, b) => dayjs(b).unix() - dayjs(a).unix());
+  }, [ads]);
 
   // 1. Initial Load & URL Sync
   useEffect(() => {
-    (async () => {
+    const init = async () => {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setAuthCheckLoading(false); return; }
+      if (!user) {
+        setAuthCheckLoading(false);
+        return;
+      }
 
-      setUserId(user.id);
       const adminStatus = await isUserAdmin(user.id);
       setIsAdmin(adminStatus);
 
-      const { data: biz } = await supabase.from('businesses').select('*');
+      const { data: biz } = await supabase.from("businesses").select("*");
       const bData = biz || [];
       setBusinesses(bData);
+      setOwnedBusinessIds(bData.filter((b) => b.owner_id === user.id).map((b) => b.id));
 
-      const ownedIds = bData.filter(b => b.owner_id === user.id).map(b => b.id);
-      setOwnedBusinessIds(ownedIds);
-      
-      const urlBusinessId = searchParams.get('businessId');
-      const initialBusinessId = urlBusinessId || (bData.length > 0 ? bData[0].id : null);
-      
-      if (!initialBusinessId) {
-        router.replace('/choose-business');
+      const initialBizId = searchParams.get("businessId") || (bData.length > 0 ? bData[0].id : null);
+      if (!initialBizId) {
+        router.replace("/choose-business");
         return;
       }
-      
-      setBusinessId(initialBusinessId);
-      
-      // Parse other filters from URL
-      const displayFormatParam = searchParams.get('displayFormat') as any;
-      if (displayFormatParam) setDisplayFormat(displayFormatParam);
-      const pageNameParam = searchParams.get('pageName');
-      if (pageNameParam) setSelectedPage(pageNameParam);
-      const startDateParam = searchParams.get('startDate');
-      if (startDateParam) setStartDate(startDateParam);
-      const endDateParam = searchParams.get('endDate');
-      if (endDateParam) setEndDate(endDateParam);
-      const aiDescriptionParam = searchParams.get('aiDescription');
-      if (aiDescriptionParam) {
-        setAiDescription(aiDescriptionParam);
-        setCommittedAiDescription(aiDescriptionParam);
-      }
-      const sortByParam = searchParams.get('sortBy') as any;
-      if (sortByParam) setSortBy(sortByParam);
-      const pageParam = searchParams.get('page');
-      if (pageParam) setCurrentPage(Number(pageParam));
 
-      const minDupParam = searchParams.get('minDuplicates');
-      const maxDupParam = searchParams.get('maxDuplicates');
-      if (minDupParam && maxDupParam) {
-        const initialRange: [number, number] = [Number(minDupParam), Number(maxDupParam)];
-        setDuplicatesRange(initialRange);
-        setCommittedDuplicatesRange(initialRange);
-        duplicatesInitialized.current = true;
+      // Sync State from URL if exists
+      if (searchParams.get("displayFormat")) setDisplayFormat(searchParams.get("displayFormat") as any);
+      if (searchParams.get("pageName")) setSelectedPage(searchParams.get("pageName")!);
+      if (searchParams.get("startDate")) setStartDate(searchParams.get("startDate")!);
+      if (searchParams.get("endDate")) setEndDate(searchParams.get("endDate")!);
+      if (searchParams.get("aiDescription")) {
+        setAiDescription(searchParams.get("aiDescription")!);
+        setCommittedAiDescription(searchParams.get("aiDescription")!);
+      }
+      if (searchParams.get("page")) setCurrentPage(Number(searchParams.get("page")));
+
+      const minD = searchParams.get("minDuplicates");
+      const maxD = searchParams.get("maxDuplicates");
+      if (minD && maxD) {
+        setDuplicatesRange([Number(minD), Number(maxD)]);
+        setCommittedDuplicatesRange([Number(minD), Number(maxD)]);
       }
 
+      setBusinessId(initialBizId);
+      lastSelectedBusinessId.current = initialBizId;
       initialized.current = true;
       setAuthCheckLoading(false);
-    })();
-  }, [router, searchParams]);
-
-  // 2. Browser Back/Forward Handling
-  useEffect(() => {
-    const onPop = (e: PopStateEvent) => {
-      const s = e.state;
-      const my = s?.__myAppState;
-      if (my && Array.isArray(my.ads)) {
-        // Critical: Set these before state updates trigger effects
-        suppressNextLoad.current = true;
-        popHandledAt.current = Date.now();
-        
-        setAds(my.ads);
-        setCurrentPage(my.currentPage || 1);
-        if (my.duplicatesRange) {
-          setDuplicatesRange(my.duplicatesRange);
-          setCommittedDuplicatesRange(my.duplicatesRange);
-        }
-        setLoading(false);
-      }
     };
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
+    init();
+  }, []); // Only on mount
 
-  // 3. Update History State on filter changes
+  // 2. Business Change Logic: Reset or Init stats
   useEffect(() => {
-    if (!initialized.current || !businessId || suppressNextLoad.current) return;
+    if (!businessId || !stats) return;
 
-    const queryString = buildQueryString({
-      businessId, displayFormat, selectedPage, startDate, endDate,
-      aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange: committedDuplicatesRange
-    });
-
-    const newUrl = queryString ? `/?${queryString}` : '/';
-    try {
-      const existing = window.history.state || {};
-      const newState = { ...existing, __myAppState: { ads, currentPage, duplicatesRange: committedDuplicatesRange } };
-      window.history.replaceState(newState, '', newUrl);
-    } catch (err) {
-      window.history.replaceState(window.history.state, '', newUrl);
+    // Если бизнес сменился вручную
+    if (lastSelectedBusinessId.current && lastSelectedBusinessId.current !== businessId) {
+      setSelectedPage("");
+      setStartDate("");
+      setEndDate("");
+      setAiDescription("");
+      setCommittedAiDescription("");
+      setCurrentPage(1);
+      setDisplayFormat("ALL");
+      
+      const range: [number, number] = [0, stats.max];
+      setDuplicatesRange(range);
+      setCommittedDuplicatesRange(range);
+      
+      lastSelectedBusinessId.current = businessId;
+    } 
+    // Если это первая загрузка и в URL не было параметров диапазона
+    else if (initialized.current && !searchParams.get("minDuplicates")) {
+        const range: [number, number] = [0, stats.max];
+        setDuplicatesRange(range);
+        setCommittedDuplicatesRange(range);
     }
-  }, [ads, businessId, displayFormat, selectedPage, startDate, endDate, committedAiDescription, sortBy, currentPage, committedDuplicatesRange, buildQueryString]);
+  }, [businessId, stats]);
 
-  // 4. Data Loading Logic
-  const loadData = useCallback(async () => {
-    if (!businessId || !initialized.current) return;
-
-    // Check if we should block this fetch (from popstate)
-    if (suppressNextLoad.current || (popHandledAt.current && Date.now() - popHandledAt.current < 1000)) {
-      suppressNextLoad.current = false;
-      return;
-    }
-
-    setLoading(true);
-    setRefreshingIds(new Set(ads.map(a => a.ad_archive_id)));
-
-    const activeMin = Math.max(1, duplicatesStats.min || 1);
-    const activeMax = Math.max(1, duplicatesStats.max || 1);
-    const includeDuplicates = duplicatesTouched.current || (committedDuplicatesRange[0] !== activeMin || committedDuplicatesRange[1] !== activeMax);
-
-    const params: any = {
-      businessId,
-      pageName: selectedPage || undefined,
-      startDate: startDate || undefined,
-      endDate: endDate || undefined,
-      displayFormat: displayFormat !== 'ALL' ? displayFormat : undefined,
-      aiDescription: committedAiDescription || undefined,
-      sortBy: sortBy || undefined,
-    };
-
-    if (includeDuplicates) {
-      params.duplicatesRange = { min: committedDuplicatesRange[0], max: committedDuplicatesRange[1] };
-    }
-
-    try {
-      const { ads: data, total } = await fetchAds(params, { page: currentPage, perPage: PER_PAGE });
-      setAds(data);
-      setTotalPages(Math.ceil(total / PER_PAGE));
-      setShowDuplicatesSlider(data.length > 0);
-    } finally {
-      setRefreshingIds(new Set());
-      setLoading(false);
-    }
-  }, [businessId, selectedPage, startDate, endDate, displayFormat, committedAiDescription, currentPage, sortBy, committedDuplicatesRange]);
-
-  // Trigger loadData when filters change
+  // 3. Update URL on filter changes
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (!initialized.current || !businessId) return;
 
-  // 5. Metadata (Stats/PageNames)
-  useEffect(() => {
-    if (businessId && initialized.current) {
-      (async () => {
-        const [pages, stats] = await Promise.all([
-          fetchPageNames(businessId),
-          fetchDuplicatesStats(businessId)
-        ]);
-        setPageNames(pages);
-        const safeStats = { min: Math.max(1, stats.min), max: Math.max(1, stats.max) };
-        setDuplicatesStats(safeStats);
-        if (!duplicatesInitialized.current) {
-          const initRange: [number, number] = [safeStats.min, safeStats.max];
-          setDuplicatesRange(initRange);
-          setCommittedDuplicatesRange(initRange);
-          duplicatesInitialized.current = true;
-          setShowDuplicatesSlider(true);
-        }
-      })();
+    const params = new URLSearchParams();
+    params.set("businessId", businessId);
+    if (displayFormat !== "ALL") params.set("displayFormat", displayFormat);
+    if (selectedPage) params.set("pageName", selectedPage);
+    if (startDate) params.set("startDate", startDate);
+    if (endDate) params.set("endDate", endDate);
+    if (committedAiDescription) params.set("aiDescription", committedAiDescription);
+    if (currentPage > 1) params.set("page", String(currentPage));
+    
+    params.set("minDuplicates", String(committedDuplicatesRange[0]));
+    params.set("maxDuplicates", String(committedDuplicatesRange[1]));
+
+    const newQuery = params.toString();
+    const currentQuery = window.location.search.replace(/^\?/, "");
+    
+    if (newQuery !== currentQuery) {
+      router.replace(`/?${newQuery}`, { scroll: false });
     }
-  }, [businessId]);
+  }, [
+    businessId,
+    displayFormat,
+    selectedPage,
+    startDate,
+    endDate,
+    committedAiDescription,
+    currentPage,
+    committedDuplicatesRange,
+  ]);
 
-  // Debounce AI Search
+  // 4. Debounces
   useEffect(() => {
-    const t = setTimeout(() => setCommittedAiDescription(aiDescription), 1000);
+    const t = setTimeout(() => setCommittedAiDescription(aiDescription), 600);
     return () => clearTimeout(t);
   }, [aiDescription]);
 
-  // Debounce duplicatesRange commits (1s) so we don't refetch while user is sliding
   useEffect(() => {
-    const t = setTimeout(() => setCommittedDuplicatesRange(duplicatesRange), 1000);
+    const t = setTimeout(() => setCommittedDuplicatesRange(duplicatesRange), 600);
     return () => clearTimeout(t);
   }, [duplicatesRange]);
 
   const isOwnedBusiness = (bizId: string) => ownedBusinessIds.includes(bizId);
   const canEditBusiness = (bizId: string) => isAdmin || isOwnedBusiness(bizId);
 
-  if (authCheckLoading) return (
-    <div className="min-h-screen flex items-center justify-center bg-white">
-      <div className="w-4 h-4 border-2 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
-    </div>
-  );
+  if (authCheckLoading)
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white">
+        <div className="w-4 h-4 border-2 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
+      </div>
+    );
 
-  // Grouping dates for UI
-  const groupedDates = Array.from(new Set(ads.map(a => a.created_at?.split('T')[0]).filter(Boolean)))
-    .sort((a, b) => dayjs(b).unix() - dayjs(a).unix());
+  const filterQuery = {
+    businessId: businessId || undefined,
+    displayFormat: displayFormat !== "ALL" ? displayFormat : undefined,
+    pageName: selectedPage || undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+    aiDescription: committedAiDescription || undefined,
+    page: currentPage > 1 ? String(currentPage) : undefined,
+    minDuplicates: String(committedDuplicatesRange[0]),
+    maxDuplicates: String(committedDuplicatesRange[1]),
+  };
 
   return (
     <div className="min-h-screen bg-white text-zinc-900 selection:bg-zinc-100">
       <nav className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-zinc-100">
         <div className="max-w-screen-2xl mx-auto px-6 h-14 flex items-center justify-between">
-          <span className="text-xs font-black tracking-[0.3em] uppercase">Duplicate Tool</span>
+          <span className="text-xs font-black tracking-[0.3em] uppercase">
+            Duplicate Tool
+          </span>
           <UserMenu />
         </div>
       </nav>
@@ -294,95 +268,140 @@ function HomeContent(): JSX.Element {
       <main className="max-w-screen-2xl mx-auto px-6 py-12">
         <header className="mb-16 flex flex-col md:flex-row md:items-end justify-between gap-8">
           <div>
-            <h1 className="text-4xl font-light tracking-tight text-zinc-950 mb-2">Creative Library</h1>
-            <p className="text-zinc-400 text-sm font-medium">Monitoring digital visual strategies.</p>
+            <h1 className="text-4xl font-light tracking-tight text-zinc-950 mb-2">
+              Creative Library
+            </h1>
+            <p className="text-zinc-400 text-sm font-medium">
+              Monitoring digital visual strategies.
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <select
-              value={businessId || ''} 
+              value={businessId || ""}
               onChange={(e) => {
                 const newBizId = e.target.value;
                 if (!canEditBusiness(newBizId)) {
-                  alert('Access denied.');
+                  alert("Access denied.");
                   return;
                 }
-                if (newBizId !== businessId) {
-                  // Reset states for new business
-                  setSelectedPage('');
-                  setAiDescription('');
-                  setCommittedAiDescription('');
-                  duplicatesInitialized.current = false;
-                  duplicatesTouched.current = false;
-                  setBusinessId(newBizId);
-                }
+                setBusinessId(newBizId);
               }}
               className="h-10 px-4 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold outline-none cursor-pointer"
             >
-              {businesses.map(b => (
+              {businesses.map((b) => (
                 <option key={b.id} value={b.id}>
-                  {b.name || b.slug} {isOwnedBusiness(b.id) ? '(Owner)' : ''}
+                  {b.name || b.slug} {isOwnedBusiness(b.id) ? "(Owner)" : ""}
                 </option>
               ))}
             </select>
-            <Link href={`/setup?returnTo=${encodeURIComponent(`/?${buildQueryString({ businessId, displayFormat, selectedPage, startDate, endDate, aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange: committedDuplicatesRange })}`)}`} className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm">
+            <Link
+              href="/setup"
+              className="h-10 px-5 bg-zinc-950 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-zinc-800 transition-all shadow-sm"
+            >
               Import
             </Link>
           </div>
         </header>
 
-        {/* Filters */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">Page</label>
-            <select 
-              value={selectedPage} onChange={e => setSelectedPage(e.target.value)}
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">
+              Page
+            </label>
+            <select
+              value={selectedPage}
+              onChange={(e) => {
+                setSelectedPage(e.target.value);
+                setCurrentPage(1);
+              }}
               className="h-10 px-3 bg-white border border-zinc-200 rounded-lg text-xs outline-none focus:border-zinc-950"
             >
               <option value="">All Pages</option>
-              {pageNames.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+              {pageNames.map((p: any) => (
+                <option key={p.name || p} value={p.name || p}>
+                  {p.name || p}
+                </option>
+              ))}
             </select>
           </div>
           <div className="flex flex-col gap-1.5 lg:col-span-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">AI Context</label>
-            <input 
-              type="text" value={aiDescription} onChange={e => setAiDescription(e.target.value)}
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">
+              AI Context
+            </label>
+            <input
+              type="text"
+              value={aiDescription}
+              onChange={(e) => {
+                setAiDescription(e.target.value);
+                setCurrentPage(1);
+              }}
               placeholder="Search visual elements..."
               className="h-10 px-4 bg-white border border-zinc-200 rounded-lg text-xs outline-none focus:border-zinc-950"
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">Start Date</label>
-            <DatePicker 
-              value={startDate ? dayjs(startDate) : null} 
-              onChange={d => setStartDate(d?.format('YYYY-MM-DD') || '')}
-              slotProps={{ textField: { size: 'small', fullWidth: true, sx: { '& fieldset': { borderRadius: '8px', border: '1px solid #E4E4E7' }, '& .MuiInputBase-root': { fontSize: '12px' } } } }}
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">
+              Start Date
+            </label>
+            <DatePicker
+              value={startDate ? dayjs(startDate) : null}
+              onChange={(d) => {
+                setStartDate(d?.format("YYYY-MM-DD") || "");
+                setCurrentPage(1);
+              }}
+              slotProps={{
+                textField: {
+                  size: "small",
+                  sx: {
+                    "& fieldset": { borderRadius: "8px" },
+                    "& .MuiInputBase-root": { fontSize: "12px" },
+                  },
+                },
+              }}
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">End Date</label>
-            <DatePicker 
-              value={endDate ? dayjs(endDate) : null} 
-              onChange={d => setEndDate(d?.format('YYYY-MM-DD') || '')}
-              slotProps={{ textField: { size: 'small', fullWidth: true, sx: { '& fieldset': { borderRadius: '8px', border: '1px solid #E4E4E7' }, '& .MuiInputBase-root': { fontSize: '12px' } } } }}
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">
+              End Date
+            </label>
+            <DatePicker
+              value={endDate ? dayjs(endDate) : null}
+              onChange={(d) => {
+                setEndDate(d?.format("YYYY-MM-DD") || "");
+                setCurrentPage(1);
+              }}
+              slotProps={{
+                textField: {
+                  size: "small",
+                  sx: {
+                    "& fieldset": { borderRadius: "8px" },
+                    "& .MuiInputBase-root": { fontSize: "12px" },
+                  },
+                },
+              }}
             />
           </div>
         </div>
 
-        {showDuplicatesSlider && (
+        {stats && (
           <div className="mb-6 bg-white border border-zinc-200 rounded-lg p-4 max-w-md">
             <div className="flex items-center justify-between mb-3">
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Duplicates</label>
-              <span className="text-[10px] font-bold text-zinc-900">{duplicatesRange[0]} - {duplicatesRange[1]}</span>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                Duplicates
+              </label>
+              <span className="text-[10px] font-bold text-zinc-900">
+                {duplicatesRange[0]} - {duplicatesRange[1]}
+              </span>
             </div>
             <Slider
               value={duplicatesRange}
               onChange={(_, newValue) => {
-                duplicatesTouched.current = true;
                 setDuplicatesRange(newValue as [number, number]);
+                setCurrentPage(1);
               }}
-              min={Math.max(1, duplicatesStats.min)}
-              max={Math.max(1, duplicatesStats.max)}
-              sx={{ color: '#18181b' }}
+              min={0}
+              max={stats.max}
+              sx={{ color: "#18181b" }}
             />
           </div>
         )}
@@ -392,45 +411,65 @@ function HomeContent(): JSX.Element {
             <ViewToggle value={displayFormat} onChange={setDisplayFormat} />
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] font-black text-zinc-300 uppercase tracking-widest">Results</span>
-            <span className="text-xs font-bold tabular-nums">{ads.length}</span>
+            <span className="text-[10px] font-black text-zinc-300 uppercase tracking-widest">
+              Results
+            </span>
+            <span className="text-xs font-bold tabular-nums">
+              {adsQuery.data?.total || 0}
+            </span>
           </div>
         </div>
 
-        {loading && ads.length === 0 ? (
+        {isLoading && ads.length === 0 ? (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6">
-            {[...Array(12)].map((_, i) => <div key={i} className="aspect-[3/4] bg-zinc-50 rounded-xl animate-pulse" />)}
+            {[...Array(12)].map((_, i) => (
+              <div
+                key={i}
+                className="aspect-[3/4] bg-zinc-50 rounded-xl animate-pulse"
+              />
+            ))}
           </div>
         ) : (
           <div className="space-y-24">
-            {groupedDates.map(date => (
+            {groupedDates.map((date) => (
               <section key={date}>
                 <div className="flex items-center gap-4 mb-10">
-                  <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-900">{dayjs(date).format('MMM D, YYYY')}</h2>
+                  <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-900">
+                    {dayjs(date).format("MMM D, YYYY")}
+                  </h2>
                   <div className="h-[1px] flex-1 bg-zinc-100" />
                 </div>
-                
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-6 gap-y-12">
-                  {ads.filter(a => a.created_at?.startsWith(date)).map((ad, idx) => {
-                    const currentQs = buildQueryString({
-                      businessId, displayFormat, selectedPage, startDate, endDate,
-                      aiDescription: committedAiDescription, sortBy, currentPage, duplicatesRange: committedDuplicatesRange
-                    });
-                    const viewParams = new URLSearchParams(currentQs);
-                    viewParams.set('returnTo', `/?${currentQs}`);
 
-                    return (
-                      <Link key={ad.ad_archive_id + idx} href={`/view/${ad.ad_archive_id}?${viewParams.toString()}`} className="group block p-3 rounded-xl transition-all duration-500 hover:bg-zinc-50 hover:shadow-2xl border border-transparent hover:border-zinc-200">
-                        <div className="aspect-[3/4] mb-4 overflow-hidden rounded-lg bg-zinc-50">
-                          <AdCard ad={ad} isRefreshing={refreshingIds.has(ad.ad_archive_id)} />
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-6 gap-y-12">
+                  {ads
+                    .filter((a) => a.created_at?.startsWith(date))
+                    .map((ad) => (
+                      <Link
+                        key={ad.id}
+                        href={{
+                          pathname: `/view/${ad.ad_archive_id}`,
+                          query: filterQuery,
+                        }}
+                        className="group block p-3 rounded-xl transition-all duration-500 hover:bg-zinc-50 hover:shadow-2xl border border-transparent hover:border-zinc-200 relative"
+                      >
+                        <div className="absolute top-5 left-5 z-10">
+                          <span className="bg-white/90 backdrop-blur-md border border-zinc-200 text-zinc-900 text-[9px] px-2 py-1 rounded-full font-bold uppercase tracking-tighter shadow-sm">
+                            {ad.duplicates_count} duplicates
+                          </span>
                         </div>
+
+                        <div className="aspect-[3/4] mb-4 overflow-hidden rounded-lg bg-zinc-50 relative">
+                          <AdCard ad={ad} isRefreshing={isLoading} />
+                        </div>
+
                         <div className="space-y-2 px-1">
-                          <p className="text-[10px] font-black text-zinc-950 truncate uppercase">{ad.page_name}</p>
-                          <p className="text-[9px] font-bold text-zinc-400">ID: {ad.ad_archive_id}</p>
-                          <div className="mt-2 text-[9px] text-zinc-500 flex items-center justify-between">
-                            <span className="font-bold">Total Items:</span>
-                            <span className="tabular-nums">{ad.items ?? ad.duplicates_count ?? '—'}</span>
-                          </div>
+                          <p className="text-[10px] font-black text-zinc-950 truncate uppercase">
+                            {ad.page_name}
+                          </p>
+                          <p className="text-[9px] font-bold text-zinc-400">
+                            ID: {ad.ad_archive_id}
+                          </p>
+
                           {ad.ai_description && (
                             <div className="pt-2">
                               <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Group Description</p>
@@ -445,8 +484,7 @@ function HomeContent(): JSX.Element {
                           )}
                         </div>
                       </Link>
-                    );
-                  })}
+                    ))}
                 </div>
               </section>
             ))}
@@ -455,19 +493,40 @@ function HomeContent(): JSX.Element {
 
         <footer className="mt-32 py-12 border-t border-zinc-100 flex flex-col items-center">
           <div className="flex items-center gap-6">
-            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="text-[10px] font-black uppercase tracking-widest disabled:opacity-10">Prev</button>
+            <button
+              disabled={currentPage === 1 || isLoading}
+              onClick={() => setCurrentPage((p) => p - 1)}
+              className="text-[10px] font-black uppercase tracking-widest disabled:opacity-10"
+            >
+              Prev
+            </button>
             <div className="flex items-center gap-4">
-              <span className="text-xs font-bold">{currentPage} / {totalPages}</span>
+              <span className="text-xs font-bold">
+                {currentPage} / {totalPages || 1}
+              </span>
             </div>
-            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="text-[10px] font-black uppercase tracking-widest disabled:opacity-10">Next</button>
+            <button
+              disabled={currentPage >= totalPages || isLoading}
+              onClick={() => setCurrentPage((p) => p + 1)}
+              className="text-[10px] font-black uppercase tracking-widest disabled:opacity-10"
+            >
+              Next
+            </button>
           </div>
         </footer>
       </main>
 
       <style jsx global>{`
-        body { background-color: #ffffff; }
-        ::-webkit-scrollbar { width: 3px; }
-        ::-webkit-scrollbar-thumb { background: #E4E4E7; border-radius: 10px; }
+        body {
+          background-color: #ffffff;
+        }
+        ::-webkit-scrollbar {
+          width: 3px;
+        }
+        ::-webkit-scrollbar-thumb {
+          background: #e4e4e7;
+          border-radius: 10px;
+        }
       `}</style>
     </div>
   );

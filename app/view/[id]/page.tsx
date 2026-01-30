@@ -1,93 +1,108 @@
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+"use client";
 
-import { fetchAdByArchiveId, fetchRelatedAds, fetchGroupRepresentative, getImageUrl } from '@/utils/supabase/db';
+import { useParams, useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
+import { useAdByArchiveId } from '@/hooks/useAdByArchiveId';
+import { useRelatedAds } from '@/hooks/useRelatedAds';
+import { useGroupRepresentative } from '@/hooks/useGroupRepresentative';
 import { RelatedAdsGrid } from '@/components/RelatedAdsGrid';
 import { GroupMetadata } from '@/components/GroupMetadata';
 import MediaDownload from '@/components/MediaDownload';
 import Image from 'next/image';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
-import { createClient } from '@/utils/supabase/server';
 
-interface PageProps {
-  params: Promise<{ id: string }>;
-  searchParams?: Promise<Record<string, string | string[] | undefined>>;
-}
+export default function ViewDetailsPage() {
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const adArchiveId = params?.id as string;
+  const businessId = (searchParams.get('businessId') as string) || '';
+  const businessSlug = (searchParams.get('businessSlug') as string) || '';
+  const returnUrl = searchParams.get('returnTo') || '/';
 
-export default async function ViewDetailsPage({ params, searchParams: searchParamsPromise }: PageProps) {
-  const { id: adArchiveId } = await params;
-  const searchParams = await searchParamsPromise;
-  
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) notFound();
+  // Формируем returnUrl с фильтрами
+  const filterParams = new URLSearchParams(searchParams as any).toString();
+  const returnUrlWithFilters = filterParams ? `/?${filterParams}` : "/";
 
-  let businessId: string | null = null;
-  if (typeof searchParams?.businessId === 'string') {
-    businessId = searchParams.businessId;
-  } else {
-    const { data: businesses } = await supabase.from('businesses').select('id, slug').eq('owner_id', user.id);
-    if (!businesses?.length) notFound();
-    businessId = businesses[0].id;
-  }
+  // Main ad
+  const { data: ad, isLoading: adLoading, error: adError } = useAdByArchiveId(adArchiveId, businessId);
+  // Related ads
+  const hasGroup = ad && ad.vector_group !== -1 && ad.vector_group !== null;
+  const { data: relatedAds = [] } = useRelatedAds(
+    hasGroup && ad.vector_group !== null ? ad.vector_group : undefined,
+    adArchiveId,
+    businessId
+  );
+  // Representative
+  const { data: representative } = useGroupRepresentative(
+    hasGroup && ad.vector_group !== null ? ad.vector_group : undefined,
+    businessId
+  );
 
-  const { data: business } = await supabase.from('businesses').select('id, slug').eq('id', businessId).single();
-  if (!business) notFound();
-
-  const ad = await fetchAdByArchiveId(adArchiveId, business.id);
-  if (!ad) notFound();
-
-  const hasGroup = ad.vector_group !== -1 && ad.vector_group !== null;
-  const [relatedAds, representative] = await Promise.all([
-    hasGroup ? fetchRelatedAds(ad.vector_group as number, ad.ad_archive_id, business.id) : Promise.resolve([]),
-    hasGroup ? fetchGroupRepresentative(ad.vector_group as number, business.id) : Promise.resolve(null),
-  ]);
-
-  const imageUrl = ad.image_url ?? await getImageUrl(ad.ad_archive_id, business.slug);
-  const representativeImageUrl = representative ? (representative.image_url ?? await getImageUrl(representative.ad_archive_id, business.slug)) : null;
-  // Build video URLs directly from stored storage path (which already includes business slug)
+  // Media URLs
   const publicBase = process.env.NEXT_PUBLIC_SUPABASE_URL ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/creatives/` : null;
+  const imageUrl = ad?.image_url;
+  const representativeImageUrl = representative?.image_url;
   const representativeVideoUrl = representative && representative.video_storage_path && publicBase
     ? `${publicBase}${representative.video_storage_path}`
     : null;
+  const videoUrl = ad?.video_storage_path && publicBase ? `${publicBase}${ad.video_storage_path}` : null;
 
-  // Main ad video URL (if stored)
-  const videoUrl = ad.video_storage_path && publicBase ? `${publicBase}${ad.video_storage_path}` : null;
-  // Check if video is actually accessible (HEAD) to avoid broken players; fallback to image if not
-  let videoAvailable = false;
-  let videoCheckWarn = false;
-  if (videoUrl) {
-    try {
-      const headRes = await fetch(videoUrl, { method: 'HEAD' });
-      if (headRes.ok) {
-        const ct = headRes.headers.get('content-type') || '';
-        if (ct.startsWith('video/')) videoAvailable = true;
-        else videoAvailable = true; // allow even if content-type missing
-      } else {
-        videoCheckWarn = true;
-      }
-    } catch (e) {
-      videoCheckWarn = true;
+  // Video check (client only)
+  const [videoAvailable, setVideoAvailable] = useState(false);
+  const [videoCheckWarn, setVideoCheckWarn] = useState(false);
+  useEffect(() => {
+    let ignore = false;
+    if (videoUrl) {
+      fetch(videoUrl, { method: 'HEAD' })
+        .then(res => {
+          if (!ignore) setVideoAvailable(res.ok);
+        })
+        .catch(() => { if (!ignore) setVideoCheckWarn(true); });
     }
-  }
-  const groupSize = (typeof (ad as any).items === 'number' ? (ad as any).items : (ad.duplicates_count || (hasGroup ? relatedAds.length + 1 : 1)));
+    return () => { ignore = true; };
+  }, [videoUrl]);
 
-  // Get return URL from searchParams
-  const returnUrl = typeof searchParams?.returnTo === 'string' ? searchParams.returnTo : '/';
+  // Group size
+  const groupSize = useMemo(() => {
+    if (!ad) return 1;
+    if (typeof (ad as any).items === 'number') return (ad as any).items;
+    if (ad.duplicates_count) return ad.duplicates_count;
+    if (hasGroup) return (relatedAds?.length || 0) + 1;
+    return 1;
+  }, [ad, relatedAds, hasGroup]);
 
-  // Data processing for breakdowns
-  const groupMembersMap = new Map();
-  groupMembersMap.set(ad.ad_archive_id, ad);
-  relatedAds.forEach(m => groupMembersMap.set(m.ad_archive_id, m));
-  if (representative) groupMembersMap.set(representative.ad_archive_id, representative);
-  const groupMembers = Array.from(groupMembersMap.values());
-
+  // Group members breakdown
+  const groupMembersMapMemo = useMemo(() => {
+    const map = new Map();
+    if (ad) map.set(ad.ad_archive_id, ad);
+    (relatedAds || []).forEach((m: any) => map.set(m.ad_archive_id, m));
+    if (representative) map.set(representative.ad_archive_id, representative);
+    return map;
+  }, [ad, relatedAds, representative]);
+  const groupMembers = Array.from(groupMembersMapMemo.values());
   const pageBreakdown = groupMembers.reduce((acc, m) => {
     const key = m.page_name || 'Unknown';
     acc.set(key, (acc.get(key) || 0) + 1);
     return acc;
   }, new Map());
+
+  // Convert searchParams to plain object for RelatedAdsGrid
+  const searchParamsObj: Record<string, string | string[] | undefined> = {};
+  searchParams.forEach((value, key) => {
+    if (searchParamsObj[key]) {
+      if (Array.isArray(searchParamsObj[key])) {
+        (searchParamsObj[key] as string[]).push(value);
+      } else {
+        searchParamsObj[key] = [searchParamsObj[key] as string, value];
+      }
+    } else {
+      searchParamsObj[key] = value;
+    }
+  });
+
+  if (adLoading) return <div className="p-10 text-center">Loading...</div>;
+  if (adError || !ad) return <div className="p-10 text-center text-red-500">Ad not found or error loading ad.</div>;
+
 
   return (
     <div className="min-h-screen bg-white text-zinc-900 selection:bg-zinc-100">
@@ -95,7 +110,7 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
         
         {/* Navigation */}
         <header className="mb-10 flex items-center justify-between">
-          <Link href={returnUrl} className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400 hover:text-zinc-900 transition-colors">
+          <Link href={returnUrlWithFilters} className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400 hover:text-zinc-900 transition-colors">
             ← Gallery
           </Link>
           <div className="flex gap-3">
@@ -121,7 +136,7 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
               {videoUrl && videoAvailable ? (
                 <video src={videoUrl} controls className="h-full w-full object-contain" />
               ) : (
-                imageUrl && <Image src={imageUrl} alt={ad.title || ""} fill className="object-contain" unoptimized />
+                imageUrl ? <Image src={imageUrl} alt={ad.title || ""} fill className="object-contain" unoptimized /> : null
               )}
               {videoUrl && videoCheckWarn && (
                 <div className="absolute top-4 right-4 bg-yellow-50 text-yellow-800 px-3 py-1 rounded-md text-sm font-semibold">Video not available — showing image</div>
@@ -205,10 +220,11 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
                 <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Representative</h3>
                 <div className="group flex items-center gap-4 p-4 bg-white border border-zinc-100 rounded-2xl hover:border-zinc-300 transition-all">
                   <div className="relative h-16 w-16 rounded-xl overflow-hidden bg-zinc-50 flex items-center justify-center">
+                    {(() => { console.log('representativeImageUrl', representativeImageUrl); return null; })()}
                     {representativeVideoUrl ? (
                       <video src={representativeVideoUrl} controls className="h-full w-full object-cover" />
                     ) : (
-                      <Image src={representativeImageUrl || ''} alt="" fill className="object-cover" unoptimized />
+                      representativeImageUrl ? <Image src={representativeImageUrl} alt="" fill className="object-cover" unoptimized /> : null
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -236,9 +252,9 @@ export default async function ViewDetailsPage({ params, searchParams: searchPara
               groupSize={groupSize} 
               vectorGroup={ad.vector_group as number} 
               currentAdArchiveId={ad.ad_archive_id} 
-              businessId={business.id} 
-              businessSlug={business.slug}
-              searchParams={searchParams}
+              businessId={businessId} 
+              businessSlug={businessSlug}
+              searchParams={searchParamsObj}
             />
           </section>
         )}

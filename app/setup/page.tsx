@@ -44,7 +44,7 @@ export default function SetupPage() {
   const [businessesLoading, setBusinessesLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [ownedBusinessIds, setOwnedBusinessIds] = useState<string[]>([]);
-  const [logs, setLogs] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string; timestamp: Date }>>([]);
+  const [logs, setLogs] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string; timestamp: number }>>([]);
 
   useEffect(() => {
     const initUser = async () => {
@@ -279,7 +279,7 @@ export default function SetupPage() {
   });
 
   const addLog = (type: 'success' | 'error' | 'info', message: string) => {
-    setLogs(prev => [{ id: uid(), type, message, timestamp: new Date() }, ...prev].slice(0, 20));
+    setLogs(prev => [{ id: uid(), type, message, timestamp: Date.now() }, ...prev].slice(0, 20));
   };
 
   const handlePasteBulk = async () => {
@@ -580,7 +580,7 @@ export default function SetupPage() {
                 ) : (
                   logs.map((log) => (
                     <div key={log.id} className="mb-2 flex gap-3 animate-in fade-in slide-in-from-left-2">
-                      <span className="text-slate-500 shrink-0">{log.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}</span>
+                      <span className="text-slate-500 shrink-0">{new Date(log.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}</span>
                       <span className={log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-emerald-400' : 'text-indigo-400'}>
                         {log.message}
                       </span>

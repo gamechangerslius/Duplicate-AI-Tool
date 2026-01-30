@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { getCreativeUrl, getBusinessSlug, getGroupDateRange, getEffectiveTitle } from '@/utils/supabase/db';
+import { getCreativeUrl, getBusinessSlug } from '@/utils/supabase/db';
 
 const ADS_TABLE = 'ads';
 const ADS_GROUPS_TABLE = 'ads_groups_test';
@@ -74,9 +74,6 @@ export async function GET(request: Request) {
       return NextResponse.json({ error }, { status: 500 });
     }
 
-    // Get group dates once for all ads
-    const groupDates = await getGroupDateRange(vector_group);
-
     // Fetch group status analytics
     const { data: statusRow } = await supabase
       .from('ads_groups_with_status')
@@ -89,15 +86,9 @@ export async function GET(request: Request) {
     const groupDiffCount = statusRow?.diff_count ?? null;
 
     const items = await Promise.all((data || []).map(async (ad: any) => {
-      const effectiveTitle = getEffectiveTitle(ad.title, ad.cards_json, { 
-        caption: ad.caption, 
-        text: ad.text 
-      });
-      
       return {
         id: ad.ad_archive_id,
         ad_archive_id: ad.ad_archive_id,
-        title: effectiveTitle,
         page_name: ad.page_name,
         ad_text: ad.text ?? null,
         caption: ad.caption ?? null,
@@ -106,8 +97,8 @@ export async function GET(request: Request) {
         display_format: ad.display_format,
         created_at: new Date().toISOString(),
         vector_group: ad.vector_group,
-        start_date_formatted: ad.start_date_formatted ?? groupDates.minStartDate ?? undefined,
-        end_date_formatted: ad.end_date_formatted ?? groupDates.maxEndDate ?? undefined,
+        start_date_formatted: ad.start_date_formatted ?? undefined,
+        end_date_formatted: ad.end_date_formatted ?? undefined,
         duplicates_count: groupRow?.items ?? ad.duplicates_count,
         status: groupStatus,
         diff_count: groupDiffCount,
