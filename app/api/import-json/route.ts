@@ -12,6 +12,10 @@ export const runtime = "nodejs";
 const runningWorkers = new Map();
 
 export async function POST(req: Request) {
+  const workerPath = path.join(
+  process.cwd(), 
+  "app/api/import-json/utils/importWorker.mjs"
+  );
   let body: any = {};
   try {
     const contentType = req.headers.get('content-type') || '';
@@ -70,13 +74,12 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    // Launch worker for import (ESM)
-    const workerPath = path.resolve(process.cwd(), "scripts/importWorker.mjs");
-    const worker = new Worker(pathToFileURL(workerPath), {
-      workerData: { taskId, items, businessId, maxAds },
-      type: 'module'
-    } as any);
-    runningWorkers.set(taskId, worker);
+    try {
+  const worker = new Worker(workerPath, {
+    workerData: { taskId, items, businessId, maxAds },
+    type: 'module' // Обязательно для .mjs
+  } as any);
+  runningWorkers.set(taskId, worker);
     worker.on('message', (msg) => {
       if (msg.type === 'log') pushLog(taskId, msg.message);
       if (msg.type === 'done') runningWorkers.delete(taskId);
@@ -96,6 +99,11 @@ export async function POST(req: Request) {
       errors: 0,
       errorDetails: [],
     });
+  } catch (e: any) {
+  pushLog(taskId, `[server] Failed to start worker: ${e.message}`);
+}
+    // Launch worker for import (ESM)
+    
   } catch (err: any) {
     return NextResponse.json(
       { message: err?.message || "Internal server error", saved: 0 },

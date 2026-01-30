@@ -252,6 +252,9 @@ export default function SetupPage() {
         body: JSON.stringify({ taskId: importTaskId })
       });
       addLog('info', '⏹️ Import stop requested. The process will halt soon.');
+      setTimeout(() => {
+        router.refresh();
+      }, 1000);
     } catch (e) {
       addLog('error', '❌ Failed to send stop request');
     }

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
 // Node runtime for DB work
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 const cache = new Map<string, { min: number; max: number; time: number }>();
 const TTL = 60 * 1000; // 1 minute

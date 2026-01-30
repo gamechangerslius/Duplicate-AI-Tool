@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 
 // Import the runningWorkers map from the main import-json route
 
-import { requestCancelFile } from "@/utils/import-cancel-file";
+import { requestCancelFile } from "../utils/import-cancel-file";
 
 export async function POST(req: Request) {
   try {
