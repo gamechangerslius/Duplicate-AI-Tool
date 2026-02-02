@@ -15,8 +15,9 @@ function sendLog(taskId, message) {
 }
 
 function makeAdminClient() {
-  const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  // Support multiple env var names to reduce deployment friction
+  const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || process.env.SUPABASE_PROJECT_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SECRET;
   if (!baseUrl || !serviceKey) throw new Error('Missing Supabase admin config in worker');
 
   const headersJson = {
@@ -96,6 +97,18 @@ async function downloadToUint8Array(url) {
 
 async function runImport(task) {
   const { taskId, items, businessId, maxAds } = task;
+  // Pre-check env configuration and fail gracefully instead of throwing
+  const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || process.env.SUPABASE_PROJECT_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SECRET;
+  if (!baseUrl || !serviceKey) {
+    const missing = [
+      !baseUrl ? 'NEXT_PUBLIC_SUPABASE_URL/SUPABASE_URL' : null,
+      !serviceKey ? 'SUPABASE_SERVICE_ROLE_KEY' : null,
+    ].filter(Boolean).join(', ');
+    sendLog(taskId, `[worker] [ERROR] Missing Supabase admin config: ${missing}`);
+    if (parentPort) parentPort.postMessage({ type: 'done', taskId, summary: { saved: 0, updated: 0, skipped: 0, errors: items?.length || 0, errorDetails: [{ reason: 'missing_env', missing }] } });
+    return;
+  }
   const adminClient = makeAdminClient();
 
   sendLog(taskId, `[worker] [START] Import started. Items: ${items.length}`);
