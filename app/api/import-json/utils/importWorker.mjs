@@ -2,20 +2,74 @@
 // Node.js worker for import tasks (run with: node scripts/importWorker.mjs)
 import { parentPort, workerData } from 'worker_threads';
 const { isCancelledFile, clearCancelFile } = (await import(new URL('../utils/import-cancel-file.js', import.meta.url).href));
-import { createClient } from '@supabase/supabase-js';
+// Remove dependency on '@supabase/supabase-js' to avoid bundling issues in Vercel workers.
+// Implement minimal REST helpers for Supabase DB and Storage.
 
 function sendLog(taskId, message) {
   if (parentPort) parentPort.postMessage({ type: 'log', taskId, message });
 }
 
 function makeAdminClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceKey) throw new Error('Missing Supabase admin config in worker');
-  return createClient(url, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    db: { schema: 'public' }
-  });
+  if (!baseUrl || !serviceKey) throw new Error('Missing Supabase admin config in worker');
+
+  const headersJson = {
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    'Content-Type': 'application/json'
+  };
+
+  async function selectSingle(table, columns, eq) {
+    const params = new URLSearchParams();
+    params.set('select', columns);
+    for (const [k, v] of Object.entries(eq || {})) params.set(`${k}`, `eq.${v}`);
+    params.set('limit', '1');
+    const url = `${baseUrl}/rest/v1/${encodeURIComponent(table)}?${params.toString()}`;
+    const res = await fetch(url, { headers: headersJson });
+    if (!res.ok) return { data: null, error: new Error(await res.text()) };
+    const arr = await res.json();
+    return { data: Array.isArray(arr) && arr.length ? arr[0] : null, error: null };
+  }
+
+  async function selectMaybeSingle(table, columns, eq) {
+    return selectSingle(table, columns, eq);
+  }
+
+  async function update(table, data, eq) {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(eq || {})) params.set(`${k}`, `eq.${v}`);
+    const url = `${baseUrl}/rest/v1/${encodeURIComponent(table)}?${params.toString()}`;
+    const res = await fetch(url, { method: 'PATCH', headers: headersJson, body: JSON.stringify(data) });
+    if (!res.ok) return { error: new Error(await res.text()) };
+    return { error: null };
+  }
+
+  async function upsert(table, rows) {
+    const url = `${baseUrl}/rest/v1/${encodeURIComponent(table)}`;
+    const res = await fetch(url, { method: 'POST', headers: { ...headersJson, Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify(rows) });
+    if (!res.ok) return { error: new Error(await res.text()) };
+    return { error: null };
+  }
+
+  async function storageUpload(bucket, destPath, buffer, contentType) {
+    const url = `${baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${destPath}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, 'Content-Type': contentType || 'application/octet-stream', 'x-upsert': 'true' },
+      body: buffer
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return { path: destPath };
+  }
+
+  return {
+    selectSingle,
+    selectMaybeSingle,
+    update,
+    upsert,
+    storage: { from: (bucket) => ({ upload: (p, b, opts) => storageUpload(bucket, p, b, opts?.contentType) }) }
+  };
 }
 
 async function uploadBufferToStorage(adminClient, bucket, destPath, buffer, contentType) {
@@ -44,7 +98,7 @@ async function runImport(task) {
   // Get business slug
   let businessSlug = businessId;
   try {
-    const { data: bdata, error: berr } = await adminClient.from('businesses').select('slug').eq('id', businessId).single();
+    const { data: bdata, error: berr } = await adminClient.selectSingle('businesses', 'slug', { id: businessId });
     if (!berr && bdata?.slug) businessSlug = bdata.slug;
   } catch (e) {}
 
@@ -70,7 +124,7 @@ async function runImport(task) {
       }
 
       // Check existing
-      const { data: existing, error: exErr } = await adminClient.from('ads').select(`ad_archive_id, storage_path, video_storage_path, cta_text, cta_type, publisher_platform, text, caption, link_url, page_categories, total_active_time, url, ad_library_url, title, cards_json, cards_count, competitor_niche, creative_json_full`).eq('ad_archive_id', adArchiveId).maybeSingle();
+      const { data: existing, error: exErr } = await adminClient.selectMaybeSingle('ads', `ad_archive_id, storage_path, video_storage_path, cta_text, cta_type, publisher_platform, text, caption, link_url, page_categories, total_active_time, url, ad_library_url, title, cards_json, cards_count, competitor_niche, creative_json_full`, { ad_archive_id: adArchiveId });
       if (exErr) {
         sendLog(taskId, `[worker] [WARN] checking existing failed: ${exErr.message}`);
       }
@@ -255,7 +309,7 @@ async function runImport(task) {
 
         if (anyMissing) {
           // Full update: overwrite fields for this ad_archive_id
-          const { error: upErr } = await adminClient.from('ads').update(adData).eq('ad_archive_id', adArchiveId);
+          const { error: upErr } = await adminClient.update('ads', adData, { ad_archive_id: adArchiveId });
           if (upErr) {
             summary.errors++; summary.errorDetails.push({ ad_archive_id: adArchiveId, reason: 'db_update_failed', message: upErr.message });
             sendLog(taskId, `[worker] [ERROR] DB full-update failed for ${adArchiveId}: ${upErr.message}`);
@@ -269,7 +323,7 @@ async function runImport(task) {
           if ((!existing.video_storage_path || existing.video_storage_path === '') && videoStoragePath) patch.video_storage_path = videoStoragePath;
 
           if (Object.keys(patch).length > 0) {
-            const { error: upErr } = await adminClient.from('ads').update(patch).eq('ad_archive_id', adArchiveId);
+            const { error: upErr } = await adminClient.update('ads', patch, { ad_archive_id: adArchiveId });
             if (upErr) {
               summary.errors++; summary.errorDetails.push({ ad_archive_id: adArchiveId, reason: 'db_update_failed', message: upErr.message });
               sendLog(taskId, `[worker] [ERROR] DB update failed for ${adArchiveId}: ${upErr.message}`);
@@ -283,7 +337,7 @@ async function runImport(task) {
       } else {
         // Use upsert to avoid duplicate key errors in concurrent runs
         try {
-          const { error: upsertErr } = await adminClient.from('ads').upsert([adData], { onConflict: 'business_id,ad_archive_id' });
+          const { error: upsertErr } = await adminClient.upsert('ads', [adData]);
           if (upsertErr) {
             // If upsert fails for other reasons, log it
             summary.errors++; summary.errorDetails.push({ ad_archive_id: adArchiveId, reason: 'db_upsert_failed', message: upsertErr.message });
