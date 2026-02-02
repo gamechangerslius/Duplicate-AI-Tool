@@ -1,7 +1,12 @@
 // scripts/importWorker.mjs
 // Node.js worker for import tasks (run with: node scripts/importWorker.mjs)
 import { parentPort, workerData } from 'worker_threads';
-const { isCancelledFile, clearCancelFile } = (await import(new URL('../utils/import-cancel-file.js', import.meta.url).href));
+import fs from 'fs';
+import path from 'path';
+// Inline cancel token helpers to avoid module resolution issues in serverless workers
+const CANCEL_DIR = process.env.CANCEL_DIR || (process.env.VERCEL === '1' ? '/tmp/cancel_tokens' : path.join(process.cwd(), 'tmp_cancel_tokens'));
+function isCancelledFile(taskId) { try { return fs.existsSync(path.join(CANCEL_DIR, taskId)); } catch { return false; } }
+function clearCancelFile(taskId) { try { const f = path.join(CANCEL_DIR, taskId); if (fs.existsSync(f)) fs.unlinkSync(f); } catch {} }
 // Remove dependency on '@supabase/supabase-js' to avoid bundling issues in Vercel workers.
 // Implement minimal REST helpers for Supabase DB and Storage.
 

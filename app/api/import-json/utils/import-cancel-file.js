@@ -3,10 +3,13 @@
 import fs from 'fs';
 import path from 'path';
 
-// Always use project root for cancel tokens (ESM compatible)
-const __filename = import.meta.url.startsWith('file://') ? new URL(import.meta.url).pathname : __filename;
-const PROJECT_ROOT = path.resolve(path.dirname(__filename), '..');
-const CANCEL_DIR = path.join(PROJECT_ROOT, 'tmp_cancel_tokens');
+// Use writable temp directory on serverless (Vercel) or project tmp locally
+const CANCEL_DIR = (() => {
+  const envDir = process.env.CANCEL_DIR;
+  if (envDir) return envDir;
+  const isVercel = process.env.VERCEL === '1';
+  return isVercel ? '/tmp/cancel_tokens' : path.join(process.cwd(), 'tmp_cancel_tokens');
+})();
 
 export function requestCancelFile(taskId) {
   if (!fs.existsSync(CANCEL_DIR)) fs.mkdirSync(CANCEL_DIR, { recursive: true });
