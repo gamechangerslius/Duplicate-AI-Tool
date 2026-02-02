@@ -78,6 +78,8 @@ function HomeContent(): JSX.Element {
   const [committedAiDescription, setCommittedAiDescription] = useState("");
   const [duplicatesRange, setDuplicatesRange] = useState<[number, number]>([0, 100]);
   const [committedDuplicatesRange, setCommittedDuplicatesRange] = useState<[number, number]>([0, 100]);
+  const [pageMenuOpen, setPageMenuOpen] = useState(false);
+  const pageMenuRef = useRef<HTMLDivElement | null>(null);
 
   const initialized = useRef(false);
   const lastSelectedBusinessId = useRef<string | null>(null);
@@ -99,6 +101,11 @@ function HomeContent(): JSX.Element {
   });
 
   const { data: pageNames = [] } = usePageNames(businessId);
+  const pageItems = useMemo(() => {
+    return (pageNames || [])
+      .map((p: any) => (typeof p === 'string' ? p : p?.name))
+      .filter((v: any) => typeof v === 'string' && v.trim().length > 0);
+  }, [pageNames]);
   const ads = adsQuery.data?.ads || [];
   const totalPages = Math.ceil((adsQuery.data?.total || 0) / PER_PAGE);
   const isLoading = adsQuery.isLoading || adsQuery.isFetching;
@@ -221,6 +228,26 @@ function HomeContent(): JSX.Element {
     committedDuplicatesRange,
   ]);
 
+  // Close page dropdown on outside click or Escape
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!pageMenuOpen) return;
+      const t = e.target as Node;
+      if (pageMenuRef.current && !pageMenuRef.current.contains(t)) {
+        setPageMenuOpen(false);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setPageMenuOpen(false);
+    }
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pageMenuOpen]);
+
   // 4. Debounces
   useEffect(() => {
     const t = setTimeout(() => setCommittedAiDescription(aiDescription), 600);
@@ -314,25 +341,45 @@ function HomeContent(): JSX.Element {
         </header>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1.5" ref={pageMenuRef}>
             <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">
               Page
             </label>
-            <select
-              value={selectedPage}
-              onChange={(e) => {
-                setSelectedPage(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="h-10 px-3 bg-white border border-zinc-200 rounded-lg text-xs outline-none focus:border-zinc-950"
+            <button
+              type="button"
+              onClick={() => setPageMenuOpen((v) => !v)}
+              className="h-10 px-3 bg-white border border-zinc-200 rounded-lg text-xs outline-none focus:border-zinc-950 text-left flex items-center justify-between"
             >
-              <option value="">All Pages</option>
-              {pageNames.map((p: any) => (
-                <option key={p.name || p} value={p.name || p}>
-                  {p.name || p}
-                </option>
-              ))}
-            </select>
+              <span className="truncate">
+                {selectedPage ? selectedPage : 'All Pages'}
+              </span>
+              <span className="ml-2 text-zinc-400">▼</span>
+            </button>
+            {pageMenuOpen && (
+              <div className="relative">
+                <div className="absolute z-30 mt-2 w-full bg-white border border-zinc-200 rounded-lg shadow-lg">
+                  <div className="max-h-64 overflow-y-auto">
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedPage(''); setCurrentPage(1); setPageMenuOpen(false); }}
+                      className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-50"
+                    >
+                      All Pages
+                    </button>
+                    {pageItems.map((name: string) => (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => { setSelectedPage(name); setCurrentPage(1); setPageMenuOpen(false); }}
+                        className={`w-full text-left px-3 py-2 text-xs hover:bg-zinc-50 ${selectedPage === name ? 'bg-zinc-50 font-bold' : ''}`}
+                      >
+                        {name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div className="flex flex-col gap-1.5 lg:col-span-2">
             <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 ml-1">

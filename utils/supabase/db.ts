@@ -9,10 +9,15 @@ export async function fetchPageNames(businessId: string): Promise<string[]> {
     const { data, error } = await supabase
       .from(ADS_TABLE)
       .select('page_name')
-      .eq('business_id', businessId);7
+      .eq('business_id', businessId)
+      .order('page_name', { ascending: true });
     if (error || !data) return [];
     // Filter out null/empty and deduplicate (in case)
-    const names = Array.from(new Set(data.map((row: any) => row.page).filter(Boolean)));
+    const names = Array.from(new Set(
+      data
+        .map((row: any) => (typeof row.page_name === 'string' ? row.page_name.trim() : null))
+        .filter((v: string | null) => !!v && v.length > 0)
+    ));
     return names;
   } catch (err) {
     return [];
