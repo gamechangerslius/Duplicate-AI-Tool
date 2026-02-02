@@ -104,6 +104,60 @@ export default function SetupPage() {
   // Массовое изменение maxAds
   const updateAllMaxAds = (val: number) => setRows(rs => rs.map(x => ({ ...x, maxAds: val })));
 
+  // Load saved Apify links for current user & business
+  useEffect(() => {
+    const loadSaved = async () => {
+      if (!selectedBusinessId) return;
+      try {
+        const res = await fetch(`/api/apify-links?businessId=${encodeURIComponent(selectedBusinessId)}&scope=mine`, { cache: 'no-store' });
+        const js = await res.json().catch(() => ({ items: [] }));
+        if (Array.isArray(js.items) && js.items.length) {
+          setRows(js.items.map((i: any) => ({ id: i.id || uid(), url: i.url || '', maxAds: Number(i.maxAds) || maxAdsGlobal })));
+          addLog('info', `📦 Loaded ${js.items.length} saved link(s)`);
+        }
+      } catch {}
+    };
+    loadSaved();
+  }, [selectedBusinessId]);
+
+  // Persist current list for user & business
+  const saveLinks = async () => {
+    if (!selectedBusinessId) return;
+    const payload = rows.filter(r => r.url.trim()).map(r => ({ url: r.url.trim(), maxAds: Number(r.maxAds) || maxAdsGlobal }));
+    try {
+      const res = await fetch('/api/apify-links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessId: selectedBusinessId, links: payload })
+      });
+      if (!res.ok) throw new Error('Save failed');
+      const js = await res.json().catch(() => ({}));
+      addLog('success', `💾 Saved ${js.count ?? payload.length} link(s)`);
+    } catch (e: any) {
+      addLog('error', `❌ Save failed: ${e?.message || 'error'}`);
+    }
+  };
+
+  const clearMyLinks = async () => {
+    if (!selectedBusinessId) return;
+    try {
+      const res = await fetch(`/api/apify-links?businessId=${encodeURIComponent(selectedBusinessId)}&all=1`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setRows([{ id: uid(), url: '', maxAds: maxAdsGlobal }]);
+      addLog('success', '🗑️ Cleared your saved links');
+    } catch (e: any) { addLog('error', `❌ ${e?.message || 'Delete failed'}`); }
+  };
+
+  const clearAllBusinessLinks = async () => {
+    if (!selectedBusinessId || !isAdmin) return;
+    try {
+      const res = await fetch(`/api/apify-links?businessId=${encodeURIComponent(selectedBusinessId)}&allBusiness=1`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setRows([{ id: uid(), url: '', maxAds: maxAdsGlobal }]);
+      addLog('success', '🗑️ Cleared all links for business');
+    } catch (e: any) { addLog('error', `❌ ${e?.message || 'Delete failed'}`); }
+  };
+
   // JSON upload handler (import-json API with confirm)
   const handleJsonUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     addLog('info', '📁 Reading JSON file(s)...');
@@ -406,7 +460,7 @@ export default function SetupPage() {
             <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden transition-all hover:shadow-md">
               <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                 <h2 className="text-lg font-bold flex items-center gap-2">🔗 Source Links</h2>
-                <div className="flex gap-2 items-center">
+                <div className="flex flex-wrap gap-2 items-center justify-end max-w-full">
                   <input
                     type="number"
                     min={1}
@@ -448,20 +502,31 @@ export default function SetupPage() {
                             </div>
                           </div>
                         )}
-                  <button onClick={handlePasteBulk} className="px-4 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm">
+                  <button onClick={handlePasteBulk} className="h-10 px-4 text-xs font-bold whitespace-nowrap bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm">
                     Paste Clipboard
                   </button>
-                  <button onClick={addRow} className="px-4 py-2 text-xs font-bold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">
+                  <button onClick={addRow} className="h-10 px-4 text-xs font-bold whitespace-nowrap bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">
                     + Add New
                   </button>
-                  <label className="px-4 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm cursor-pointer">
+                  <label className="h-10 px-4 text-xs font-bold whitespace-nowrap bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm cursor-pointer flex items-center">
                     Upload JSON
                     <input type="file" accept="application/json" multiple onChange={handleJsonUpload} className="hidden" />
                   </label>
-                  <label className="px-4 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm cursor-pointer">
+                  <label className="h-10 px-4 text-xs font-bold whitespace-nowrap bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm cursor-pointer flex items-center">
                     Upload CSV
                     <input type="file" accept="text/csv,.csv" onChange={handleCsvUpload} className="hidden" />
                   </label>
+                  <button onClick={saveLinks} className="h-10 px-4 text-xs font-bold whitespace-nowrap bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors shadow-sm">Save Links</button>
+                  <button onClick={clearMyLinks} className="h-10 px-4 text-xs font-bold whitespace-nowrap bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm">Clear My Links</button>
+                  {isAdmin && (
+                    <button
+                      onClick={clearAllBusinessLinks}
+                      title="Clear all saved links for this business (admin only)"
+                      className="h-10 px-4 text-xs font-bold whitespace-nowrap bg-white border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors shadow-sm"
+                    >
+                      Clear All<span className="hidden md:inline"> (Business)</span>
+                    </button>
+                  )}
                 </div>
               </div>
 

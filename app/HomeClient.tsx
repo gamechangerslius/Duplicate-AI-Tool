@@ -300,6 +300,16 @@ function HomeContent(): JSX.Element {
             >
               Import
             </Link>
+            {businessId && (
+              <a
+                href={`/api/export-ads?businessId=${encodeURIComponent(businessId)}${selectedPage?`&pageName=${encodeURIComponent(selectedPage)}`:''}${startDate?`&startDate=${encodeURIComponent(startDate)}`:''}${endDate?`&endDate=${encodeURIComponent(endDate)}`:''}${displayFormat!=="ALL"?`&displayFormat=${encodeURIComponent(displayFormat)}`:''}${committedAiDescription?`&aiDescription=${encodeURIComponent(committedAiDescription)}`:''}&minDuplicates=${encodeURIComponent(String(committedDuplicatesRange[0]))}&maxDuplicates=${encodeURIComponent(String(committedDuplicatesRange[1]))}&format=csv`}
+                className="h-10 px-5 bg-white text-zinc-900 rounded-lg flex items-center justify-center font-bold text-xs border border-zinc-200 hover:bg-zinc-50 transition-all shadow-sm"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Export
+              </a>
+            )}
           </div>
         </header>
 

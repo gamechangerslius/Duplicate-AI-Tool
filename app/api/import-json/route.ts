@@ -3,12 +3,16 @@ import { Worker } from "worker_threads";
 import path from "path";
 import { pathToFileURL } from 'url';
 import { pushLog } from "@/utils/sse-logs";
+// Force Vercel to include '@supabase/supabase-js' in the Serverless bundle.
+// The worker file imports this package, but since the worker is launched as a separate
+// module file, it isn't analyzed during bundling. A direct import here ensures the
+// dependency is copied to /var/task/node_modules so the worker can resolve it at runtime.
+import { createClient as __SUPABASE_FORCE_INCLUDE } from '@supabase/supabase-js';
 
 export const runtime = "nodejs";
+// Prevent tree-shaking of the above import
+void __SUPABASE_FORCE_INCLUDE;
 
-// ...existing code...
-
-// In-memory map of running workers by taskId
 const runningWorkers = new Map();
 
 export async function POST(req: Request) {
