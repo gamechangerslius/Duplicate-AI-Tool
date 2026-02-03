@@ -3,14 +3,30 @@
 import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 // SSE log hook
 function useSSELogs(base: string, taskId: string | null, onLog: (msg: string) => void) {
+  const onLogRef = useRef(onLog);
+  const seenRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    onLogRef.current = onLog;
+  }, [onLog]);
+
   useEffect(() => {
     if (!taskId) return;
+    seenRef.current = new Set();
     const evtSource = new EventSource(`/api/${base}/logs/${taskId}`);
     evtSource.onmessage = (event) => {
-      onLog(event.data);
+      const msg = event.data;
+      if (!msg) return;
+      if (seenRef.current.has(msg)) return;
+      seenRef.current.add(msg);
+      if (seenRef.current.size > 500) {
+        const first = seenRef.current.values().next().value;
+        if (first) seenRef.current.delete(first);
+      }
+      onLogRef.current(msg);
     };
     return () => evtSource.close();
-  }, [base, taskId, onLog]);
+  }, [base, taskId]);
 }
 import React from "react";
 import { createClient } from '@/utils/supabase/client';
@@ -384,6 +400,11 @@ export default function SetupPage() {
         })
       });
       if (!res.ok) throw new Error('Request failed');
+      const respJson = await res.json().catch(() => ({}));
+      if (respJson?.importTaskId) {
+        setImportTaskId(respJson.importTaskId);
+        addLog('info', `📥 Import logs subscribed (task ${respJson.importTaskId})`);
+      }
       addLog('success', '✅ Data sent to Apify successfully');
       setSuccessMsg('Task started!');
     } catch (e: any) {
