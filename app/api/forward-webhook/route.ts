@@ -204,6 +204,15 @@ async function runApifyWithFallback(runInput: any, reqId: string, apifyActorId: 
     let data: any = null;
     try { data = JSON.parse(text); } catch {}
 
+    // Log response details for debugging
+    console.log(`[${reqId}] 📊 Apify response status: ${resp.status}`);
+    console.log(`[${reqId}] 📊 Apify response data type: ${Array.isArray(data) ? 'array' : typeof data}`);
+    console.log(`[${reqId}] 📊 Apify response length: ${Array.isArray(data) ? data.length : 'N/A'}`);
+    if (!Array.isArray(data)) {
+      console.log(`[${reqId}] 📊 Apify response preview: ${text?.slice?.(0, 500)}`);
+      log?.(`⚠️ Apify returned non-array response (status ${resp.status})`);
+    }
+
     if (Array.isArray(data) && data.length > 0) {
       log?.(`✅ run-sync returned ${data.length} items`);
       if (Number.isFinite(perLinkLimit as number) && data.length > (perLinkLimit as number)) {
@@ -222,7 +231,8 @@ async function runApifyWithFallback(runInput: any, reqId: string, apifyActorId: 
       return polled;
     }
 
-    console.log(`[${reqId}] ⚠️ run-sync did not return array`);
+    console.log(`[${reqId}] ⚠️ run-sync did not return array or returned empty array`);
+    log?.(`⚠️ Apify returned empty or invalid response`);
     return null;
 
   } catch (err: any) {
@@ -312,8 +322,9 @@ export async function POST(req: Request) {
       };
 
       try {
-        // Log runInput (short)
+        // Log runInput (full for debugging)
         log?.(`▶ Sent to Apify: count=${perLinkLimit} url=${entry.url}`);
+        console.log(`[${reqId}] 📤 Full runInput:`, JSON.stringify(runInput, null, 2));
 
         const results: any = await runApifyWithFallback(runInput, reqId, apifyActorId, apifyToken, clientTaskId, apifyTimeout, perLinkLimit, log);
 
@@ -355,6 +366,10 @@ export async function POST(req: Request) {
     if (autoImport === true && businessId) {
       log(`🔄 Starting auto-import of ${allResults.length} item(s) to database for business_id=${businessId}...`);
       try {
+        // Create separate taskId for import worker
+        const importTaskId = `import_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        log(`📋 Import task ID: ${importTaskId} (subscribe to /api/import-json/logs/${importTaskId} for detailed logs)`);
+        
         const importUrl = new URL('/api/import-json', req.url);
         const importResp = await fetch(importUrl.toString(), {
           method: 'POST',
@@ -366,7 +381,7 @@ export async function POST(req: Request) {
             items: allResults,
             businessId,
             maxAds: defaultMaxAds,
-            taskId: clientTaskId
+            taskId: importTaskId
           })
         });
 
@@ -388,7 +403,8 @@ export async function POST(req: Request) {
           message: "Apify results imported to database", 
           items: allResults, 
           count: allResults.length,
-          importResult 
+          importResult,
+          importTaskId // Return this so frontend can subscribe to import logs
         });
       } catch (importErr: any) {
         log(`⚠️ Auto-import exception: ${importErr?.message}`);

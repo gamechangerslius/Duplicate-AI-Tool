@@ -154,141 +154,86 @@ async function runImport(task) {
         continue;
       }
 
-      // Determine media - comprehensive search across all possible locations
+      // Determine media - search for first available video or image
       const snapshot = item.snapshot || {};
       
       let storagePath = null;
       let videoStoragePath = null;
       let originalVideoUrl = null;
-      let mediaSource = null; // Track where media was found
+      let mediaSource = null;
       
-      // === VIDEO SEARCH ===
-      // 1. Check direct videos array
-      if (!originalVideoUrl && snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0) {
-        const video = snapshot.videos[0] || {};
-        const videoUrl = video.video_hd_url || video.video_sd_url || video.url;
-        const previewUrl = video.video_preview_image_url;
-
-        if (videoUrl) {
-          originalVideoUrl = videoUrl;
+      // === VIDEO SEARCH - just save URL, don't download ===
+      // Priority: direct videos → cards → extra_videos
+      if (snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0) {
+        const video = snapshot.videos[0];
+        originalVideoUrl = video?.video_hd_url || video?.video_sd_url || video?.url;
+        if (originalVideoUrl) {
           mediaSource = 'snapshot.videos[0]';
-          sendLog(taskId, `[worker] ✓ Found video in ${mediaSource} for ${adArchiveId}`);
-        }
-
-        if (previewUrl && !storagePath) {
-          try {
-            const { uint8, contentType } = await downloadToUint8Array(previewUrl);
-            const ext = contentType.includes('png') ? 'png' : 'jpg';
-            const pathKey = `${businessSlug}/${adArchiveId}_preview.${ext}`;
-            await uploadBufferToStorage(adminClient, 'creatives', pathKey, uint8, contentType);
-            storagePath = pathKey;
-            sendLog(taskId, `[worker] ✓ Uploaded video preview from ${mediaSource} -> ${pathKey}`);
-          } catch (e) {
-            sendLog(taskId, `[worker] [WARN] preview upload failed (${mediaSource}): ${e.message}`);
-          }
+          sendLog(taskId, `[worker] ✓ Found video URL in ${mediaSource}`);
         }
       }
       
-      // 2. Check cards for videos
-      if (!originalVideoUrl && snapshot.cards && Array.isArray(snapshot.cards) && snapshot.cards.length > 0) {
-        for (let i = 0; i < snapshot.cards.length; i++) {
-          const card = snapshot.cards[i];
-          const videoUrl = card.video_hd_url || card.video_sd_url;
-          const previewUrl = card.video_preview_image_url;
-
-          if (videoUrl) {
-            originalVideoUrl = videoUrl;
-            mediaSource = `snapshot.cards[${i}]`;
-            sendLog(taskId, `[worker] ✓ Found video in ${mediaSource} for ${adArchiveId}`);
-            
-            if (previewUrl && !storagePath) {
-              try {
-                const { uint8, contentType } = await downloadToUint8Array(previewUrl);
-                const ext = contentType.includes('png') ? 'png' : 'jpg';
-                const pathKey = `${businessSlug}/${adArchiveId}_preview.${ext}`;
-                await uploadBufferToStorage(adminClient, 'creatives', pathKey, uint8, contentType);
-                storagePath = pathKey;
-                sendLog(taskId, `[worker] ✓ Uploaded video preview from ${mediaSource} -> ${pathKey}`);
-              } catch (e) {
-                sendLog(taskId, `[worker] [WARN] preview upload failed (${mediaSource}): ${e.message}`);
-              }
-            }
-            break;
-          }
+      if (!originalVideoUrl && snapshot.cards && Array.isArray(snapshot.cards)) {
+        const cardWithVideo = snapshot.cards.find(c => c.video_hd_url || c.video_sd_url);
+        if (cardWithVideo) {
+          originalVideoUrl = cardWithVideo.video_hd_url || cardWithVideo.video_sd_url;
+          mediaSource = 'snapshot.cards[]';
+          sendLog(taskId, `[worker] ✓ Found video URL in ${mediaSource}`);
         }
       }
       
-      // 3. Check extra_videos
       if (!originalVideoUrl && snapshot.extra_videos && Array.isArray(snapshot.extra_videos) && snapshot.extra_videos.length > 0) {
         const video = snapshot.extra_videos[0];
-        const videoUrl = video?.video_hd_url || video?.video_sd_url || video?.url;
-        if (videoUrl) {
-          originalVideoUrl = videoUrl;
+        originalVideoUrl = video?.video_hd_url || video?.video_sd_url || video?.url;
+        if (originalVideoUrl) {
           mediaSource = 'snapshot.extra_videos[0]';
-          sendLog(taskId, `[worker] ✓ Found video in ${mediaSource} for ${adArchiveId}`);
+          sendLog(taskId, `[worker] ✓ Found video URL in ${mediaSource}`);
         }
       }
 
-      // === IMAGE SEARCH (only if no video found or need preview) ===
-      if (!storagePath) {
-        let imageUrl = null;
-        
-        // 1. Direct images array
-        if (!imageUrl && snapshot.images && Array.isArray(snapshot.images) && snapshot.images.length > 0) {
-          for (let i = 0; i < snapshot.images.length; i++) {
-            const img = snapshot.images[i];
-            imageUrl = img?.original_image_url || img?.resized_image_url || img?.url;
-            if (imageUrl) {
-              mediaSource = `snapshot.images[${i}]`;
-              sendLog(taskId, `[worker] ✓ Found image in ${mediaSource} for ${adArchiveId}`);
-              break;
-            }
-          }
+      // === IMAGE SEARCH - take first found image and download it ===
+      // Priority: direct images → cards → extra_images
+      let imageUrl = null;
+      
+      if (snapshot.images && Array.isArray(snapshot.images) && snapshot.images.length > 0) {
+        const img = snapshot.images[0];
+        imageUrl = img?.original_image_url || img?.resized_image_url || img?.url;
+        if (imageUrl) mediaSource = 'snapshot.images[0]';
+      }
+      
+      if (!imageUrl && snapshot.cards && Array.isArray(snapshot.cards)) {
+        const cardWithImage = snapshot.cards.find(c => c.original_image_url || c.resized_image_url);
+        if (cardWithImage) {
+          imageUrl = cardWithImage.original_image_url || cardWithImage.resized_image_url;
+          mediaSource = 'snapshot.cards[]';
         }
-        
-        // 2. Cards with images (check all cards)
-        if (!imageUrl && snapshot.cards && Array.isArray(snapshot.cards) && snapshot.cards.length > 0) {
-          for (let i = 0; i < snapshot.cards.length; i++) {
-            const card = snapshot.cards[i];
-            imageUrl = card?.original_image_url || card?.resized_image_url;
-            if (imageUrl) {
-              mediaSource = `snapshot.cards[${i}]`;
-              sendLog(taskId, `[worker] ✓ Found image in ${mediaSource} for ${adArchiveId}`);
-              break;
-            }
-          }
-        }
-        
-        // 3. Extra images
-        if (!imageUrl && snapshot.extra_images && Array.isArray(snapshot.extra_images) && snapshot.extra_images.length > 0) {
-          const img = snapshot.extra_images[0];
-          imageUrl = img?.url || img?.original_image_url || img?.resized_image_url;
-          if (imageUrl) {
-            mediaSource = 'snapshot.extra_images[0]';
-            sendLog(taskId, `[worker] ✓ Found image in ${mediaSource} for ${adArchiveId}`);
-          }
-        }
-        
-        // Upload image if found
-        if (imageUrl) {
-          try {
-            const { uint8, contentType } = await downloadToUint8Array(imageUrl);
-            const ext = contentType.includes('png') ? 'png' : 'jpg';
-            const pathKey = `${businessSlug}/${adArchiveId}.${ext}`;
-            await uploadBufferToStorage(adminClient, 'creatives', pathKey, uint8, contentType);
-            storagePath = pathKey;
-            sendLog(taskId, `[worker] ✓ Uploaded image from ${mediaSource} -> ${pathKey}`);
-          } catch (e) {
-            sendLog(taskId, `[worker] [ERROR] image upload failed (${mediaSource}): ${e.message}`);
-          }
+      }
+      
+      if (!imageUrl && snapshot.extra_images && Array.isArray(snapshot.extra_images) && snapshot.extra_images.length > 0) {
+        const img = snapshot.extra_images[0];
+        imageUrl = img?.url || img?.original_image_url || img?.resized_image_url;
+        if (imageUrl) mediaSource = 'snapshot.extra_images[0]';
+      }
+      
+      // Download and upload image if found
+      if (imageUrl) {
+        try {
+          const { uint8, contentType } = await downloadToUint8Array(imageUrl);
+          const ext = contentType.includes('png') ? 'png' : 'jpg';
+          const pathKey = `${businessSlug}/${adArchiveId}.${ext}`;
+          await uploadBufferToStorage(adminClient, 'creatives', pathKey, uint8, contentType);
+          storagePath = pathKey;
+          sendLog(taskId, `[worker] ✓ Downloaded & uploaded image from ${mediaSource}`);
+        } catch (e) {
+          sendLog(taskId, `[worker] [ERROR] Image upload failed (${mediaSource}): ${e.message}`);
         }
       }
 
       // Check if we have any media at all - skip if not found
-      if (!storagePath && !videoStoragePath && !originalVideoUrl) {
+      if (!storagePath && !originalVideoUrl) {
         summary.errors++; 
         summary.errorDetails.push({ ad_archive_id: adArchiveId, reason: 'no_media_found' });
-        sendLog(taskId, `[worker] [SKIP] No media found in any location for ${adArchiveId}`);
+        sendLog(taskId, `[worker] [SKIP] No media found for ${adArchiveId}`);
         continue;
       }
 
