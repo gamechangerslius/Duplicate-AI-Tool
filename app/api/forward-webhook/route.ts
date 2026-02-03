@@ -343,9 +343,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "No data from Apify", items: 0 });
     }
 
+    // Log what Apify returned
+    const sampleItem = allResults[0];
+    const sampleKeys = sampleItem ? Object.keys(sampleItem).slice(0, 10) : [];
+    log(`✅ Apify returned ${allResults.length} item(s)`);
+    log(`📋 Sample item fields: ${sampleKeys.join(', ')}`);
+    if (sampleItem?.adArchiveID) log(`  Sample ad_archive_id: ${sampleItem.adArchiveID}`);
+    if (sampleItem?.creativeContent?.length) log(`  Sample creatives: ${sampleItem.creativeContent.length} items`);
+
     // Auto-import to database if requested
     if (autoImport === true && businessId) {
-      log(`🔄 Auto-importing ${allResults.length} items to database...`);
+      log(`🔄 Starting auto-import of ${allResults.length} item(s) to database for business_id=${businessId}...`);
       try {
         const importUrl = new URL('/api/import-json', req.url);
         const importResp = await fetch(importUrl.toString(), {
@@ -364,7 +372,7 @@ export async function POST(req: Request) {
 
         if (!importResp.ok) {
           const errText = await importResp.text();
-          log(`⚠️ Auto-import failed: ${errText}`);
+          log(`⚠️ Auto-import failed with status ${importResp.status}: ${errText}`);
           return NextResponse.json({ 
             message: "Apify succeeded but import failed", 
             items: allResults, 
@@ -374,7 +382,8 @@ export async function POST(req: Request) {
         }
 
         const importResult = await importResp.json();
-        log(`✅ Auto-import completed`);
+        log(`✅ Auto-import completed successfully`);
+        log(`📊 Import result: ${JSON.stringify(importResult).slice(0, 200)}`);
         return NextResponse.json({ 
           message: "Apify results imported to database", 
           items: allResults, 

@@ -112,6 +112,7 @@ async function runImport(task) {
   const adminClient = makeAdminClient();
 
   sendLog(taskId, `[worker] [START] Import started. Items: ${items.length}`);
+  sendLog(taskId, `📥 Processing items for database insert to 'ads' table...`);
 
   // Get business slug
   let businessSlug = businessId;
@@ -372,6 +373,7 @@ async function runImport(task) {
   }
 
   sendLog(taskId, `[worker] [COMPLETE] saved=${summary.saved} updated=${summary.updated} skipped=${summary.skipped} errors=${summary.errors}`);
+  sendLog(taskId, `✅ Database import complete: ${summary.saved} new, ${summary.updated} updated, ${summary.skipped} skipped`);
   if (parentPort) parentPort.postMessage({ type: 'done', taskId, summary });
 }
 

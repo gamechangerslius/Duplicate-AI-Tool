@@ -78,6 +78,12 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+
+    // Log import start details
+    await pushLog(taskId, `📥 Import started: ${items.length} items received`);
+    await pushLog(taskId, `   Business: ${businessId || 'not specified'}`);
+    await pushLog(taskId, `   Max ads per group: ${maxAds || 'default'}`);
+
     try {
   const worker = new Worker(workerPath, {
     workerData: { taskId, items, businessId, maxAds },
@@ -86,14 +92,19 @@ export async function POST(req: Request) {
   runningWorkers.set(taskId, worker);
     worker.on('message', (msg) => {
       if (msg.type === 'log') pushLog(taskId, msg.message);
-      if (msg.type === 'done') runningWorkers.delete(taskId);
+      if (msg.type === 'done') {
+        pushLog(taskId, `✅ Import worker completed`);
+        runningWorkers.delete(taskId);
+      }
     });
     worker.on('error', (err) => {
-      pushLog(taskId, `[worker] Error: ${err.message}`);
+      pushLog(taskId, `❌ [worker] Error: ${err.message}`);
       runningWorkers.delete(taskId);
     });
     worker.on('exit', (code) => {
-      pushLog(taskId, `[worker] Exited with code ${code}`);
+      if (code !== 0) {
+        pushLog(taskId, `⚠️ [worker] Exited with code ${code}`);
+      }
       runningWorkers.delete(taskId);
     });
     return NextResponse.json({
