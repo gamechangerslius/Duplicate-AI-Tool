@@ -182,7 +182,7 @@ export async function fetchAdByArchiveId(adArchiveId: string, businessId?: strin
 
   if (error || !data) return null;
 
-  // Формируем image_url из storage_path, если есть
+  // Construct image_url from storage_path if exists
   const publicBase = process.env.NEXT_PUBLIC_SUPABASE_URL ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/creatives/` : null;
   const imageUrl = data.storage_path && publicBase
     ? `${publicBase}${data.storage_path}`

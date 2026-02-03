@@ -25,7 +25,6 @@ export async function GET(req: NextRequest, { params }: { params: { taskId: stri
       async start(controller) {
         let lastIdx = 0;
         let finished = false;
-        controller.enqueue(`data: ${nowStamp()} Log stream started for task ${taskId}\n\n`);
         const cancelFileMod = await cancelFileModPromise;
         const isCancelledFile = cancelFileMod.isCancelledFile as (id: string) => boolean;
         const clearCancelFile = cancelFileMod.clearCancelFile as (id: string) => void;

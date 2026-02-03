@@ -171,7 +171,7 @@ function HomeContent(): JSX.Element {
   useEffect(() => {
     if (!businessId || !stats) return;
 
-    // Если бизнес сменился вручную
+    // If business was manually switched
     if (lastSelectedBusinessId.current && lastSelectedBusinessId.current !== businessId) {
       setSelectedPage("");
       setStartDate("");
@@ -187,7 +187,7 @@ function HomeContent(): JSX.Element {
       
       lastSelectedBusinessId.current = businessId;
     } 
-    // Если это первая загрузка и в URL не было параметров диапазона
+    // If this is first load and no range parameters in URL
     else if (initialized.current && !searchParams.get("minDuplicates")) {
         const range: [number, number] = [0, stats.max];
         setDuplicatesRange(range);

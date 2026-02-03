@@ -19,7 +19,7 @@ export default function ViewDetailsPage() {
   const businessSlug = (searchParams.get('businessSlug') as string) || '';
   const returnUrl = searchParams.get('returnTo') || '/';
 
-  // Формируем returnUrl с фильтрами
+  // Compose returnUrl with filters
   const filterParams = new URLSearchParams(searchParams as any).toString();
   const returnUrlWithFilters = filterParams ? `/?${filterParams}` : "/";
 

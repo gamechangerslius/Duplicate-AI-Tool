@@ -101,7 +101,6 @@ export default function SetupPage() {
   const removeRow = (id: string) => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== id) : rs));
   const updateRow = (id: string, url: string) => setRows(rs => rs.map(x => (x.id === id ? { ...x, url } : x)));
   const updateRowMax = (id: string, maxAds: number) => setRows(rs => rs.map(x => (x.id === id ? { ...x, maxAds } : x)));
-  // Массовое изменение maxAds
   const updateAllMaxAds = (val: number) => setRows(rs => rs.map(x => ({ ...x, maxAds: val })));
 
   // Load saved Apify links for current user & business
@@ -247,13 +246,13 @@ export default function SetupPage() {
     e.target.value = '';
   };
 
-  // Подтверждение импорта JSON
+  // JSON import confirmation
   const confirmJsonImport = async () => {
     if (!jsonConfirm || !selectedBusinessId) return;
     setSending(true);
     setImportStopped(false);
     setJsonConfirm(null);
-    // Генерируем taskId (можно заменить на uuid или серверный id)
+    // Generate taskId (can replace with uuid or server id)
     const taskId = `task_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     setImportTaskId(taskId);
     addLog('info', `⏳ Sending creatives to server for import (taskId: ${taskId})...`);
@@ -313,7 +312,7 @@ export default function SetupPage() {
       addLog('error', '❌ Failed to send stop request');
     }
   };
-  // Подписка на SSE логи по importTaskId
+  // Subscribe to SSE logs for import-json taskId
   useSSELogs('import-json', importTaskId, (msg) => {
     if (msg.includes('⏹️ Import cancelled by user.')) {
       setImportStopped(true);
@@ -324,7 +323,7 @@ export default function SetupPage() {
     }
   });
 
-  // Подписка на SSE логи для forward-webhook (parser)
+  // Subscribe to SSE logs for forward-webhook (parser)
   useSSELogs('forward-webhook', forwardTaskId, (msg) => {
     if (msg.includes('⏹️')) {
       setImportStopped(true);

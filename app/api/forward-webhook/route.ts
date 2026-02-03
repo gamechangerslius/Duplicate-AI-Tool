@@ -241,7 +241,7 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { links, businessId, maxAds: defaultMaxAds, taskId } = body ?? {};
+    const { links, businessId, maxAds: defaultMaxAds, taskId, autoImport } = body ?? {};
     clientTaskId = typeof taskId === 'string' && taskId ? taskId : null;
     const log = (m: string) => { if (clientTaskId) pushLog(clientTaskId, m); };
 
@@ -341,6 +341,55 @@ export async function POST(req: Request) {
     if (!allResults.length) {
       log(`⚠️ No data from Apify`);
       return NextResponse.json({ message: "No data from Apify", items: 0 });
+    }
+
+    // Auto-import to database if requested
+    if (autoImport === true && businessId) {
+      log(`🔄 Auto-importing ${allResults.length} items to database...`);
+      try {
+        const importUrl = new URL('/api/import-json', req.url);
+        const importResp = await fetch(importUrl.toString(), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cookie': req.headers.get('Cookie') || '', // Forward auth cookies
+          },
+          body: JSON.stringify({
+            items: allResults,
+            businessId,
+            maxAds: defaultMaxAds,
+            taskId: clientTaskId
+          })
+        });
+
+        if (!importResp.ok) {
+          const errText = await importResp.text();
+          log(`⚠️ Auto-import failed: ${errText}`);
+          return NextResponse.json({ 
+            message: "Apify succeeded but import failed", 
+            items: allResults, 
+            count: allResults.length,
+            importError: errText 
+          });
+        }
+
+        const importResult = await importResp.json();
+        log(`✅ Auto-import completed`);
+        return NextResponse.json({ 
+          message: "Apify results imported to database", 
+          items: allResults, 
+          count: allResults.length,
+          importResult 
+        });
+      } catch (importErr: any) {
+        log(`⚠️ Auto-import exception: ${importErr?.message}`);
+        return NextResponse.json({ 
+          message: "Apify succeeded but import failed", 
+          items: allResults, 
+          count: allResults.length,
+          importError: importErr?.message 
+        });
+      }
     }
 
     // Return Apify results directly to caller

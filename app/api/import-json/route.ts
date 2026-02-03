@@ -81,7 +81,7 @@ export async function POST(req: Request) {
     try {
   const worker = new Worker(workerPath, {
     workerData: { taskId, items, businessId, maxAds },
-    type: 'module' // Обязательно для .mjs
+    type: 'module' // Required for .mjs
   } as any);
   runningWorkers.set(taskId, worker);
     worker.on('message', (msg) => {

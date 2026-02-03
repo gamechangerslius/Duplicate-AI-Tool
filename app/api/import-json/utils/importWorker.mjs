@@ -158,23 +158,17 @@ async function runImport(task) {
       const isVideo = snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0;
       let storagePath = null;
       let videoStoragePath = null;
+      let originalVideoUrl = null;
 
       if (isVideo) {
         const video = snapshot.videos[0] || {};
         const videoUrl = video.video_hd_url || video.video_sd_url || video.url;
         const previewUrl = video.video_preview_image_url;
 
+        // Save video URL instead of downloading
         if (videoUrl) {
-          try {
-            const { uint8, contentType } = await downloadToUint8Array(videoUrl);
-            const ext = contentType.includes('mp4') ? 'mp4' : 'mp4';
-            const pathKey = `${businessSlug}/${adArchiveId}.${ext}`;
-            await uploadBufferToStorage(adminClient, 'creatives', pathKey, uint8, contentType);
-            videoStoragePath = pathKey;
-            sendLog(taskId, `[worker] uploaded video for ${adArchiveId} -> ${pathKey}`);
-          } catch (e) {
-            sendLog(taskId, `[worker] [ERROR] video download/upload failed for ${adArchiveId}: ${e.message}`);
-          }
+          originalVideoUrl = videoUrl;
+          sendLog(taskId, `[worker] saved video URL for ${adArchiveId}: ${videoUrl}`);
         }
 
         if (previewUrl) {
@@ -205,7 +199,7 @@ async function runImport(task) {
         }
       }
 
-      if (!storagePath && !videoStoragePath) {
+      if (!storagePath && !videoStoragePath && !originalVideoUrl) {
         summary.errors++; summary.errorDetails.push({ ad_archive_id: adArchiveId, reason: 'no_media_uploaded' });
         sendLog(taskId, `[worker] [ERROR] no media uploaded for ${adArchiveId}`);
         continue;
@@ -292,6 +286,7 @@ async function runImport(task) {
         display_format: isVideo ? 'VIDEO' : 'IMAGE',
         storage_path: storagePath,
         video_storage_path: videoStoragePath,
+        original_video_url: originalVideoUrl,
         creative_json_full: item,
         start_date_formatted: start_date_formatted,
         end_date_formatted: end_date_formatted,
@@ -326,7 +321,7 @@ async function runImport(task) {
         }
 
         if (anyMissing) {
-          // Full update: overwrite fields for this ad_archive_id
+          // Full update: overwrite fields for this ad_archive_id (include original_video_url if present)
           const { error: upErr } = await adminClient.update('ads', adData, { ad_archive_id: adArchiveId });
           if (upErr) {
             summary.errors++; summary.errorDetails.push({ ad_archive_id: adArchiveId, reason: 'db_update_failed', message: upErr.message });
@@ -335,10 +330,11 @@ async function runImport(task) {
             summary.updated++; sendLog(taskId, `[worker] [UPDATE_FULL] ${adArchiveId}`);
           }
         } else {
-          // Only ensure storage paths if missing
+          // Only ensure storage paths and video URL if missing
           const patch = {};
           if ((!existing.storage_path || existing.storage_path === '') && storagePath) patch.storage_path = storagePath;
           if ((!existing.video_storage_path || existing.video_storage_path === '') && videoStoragePath) patch.video_storage_path = videoStoragePath;
+          if ((!existing.original_video_url || existing.original_video_url === '') && originalVideoUrl) patch.original_video_url = originalVideoUrl;
 
           if (Object.keys(patch).length > 0) {
             const { error: upErr } = await adminClient.update('ads', patch, { ad_archive_id: adArchiveId });
