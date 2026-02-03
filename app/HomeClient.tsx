@@ -538,7 +538,7 @@ function HomeContent(): JSX.Element {
                             </div>
                           )}
 
-                          {ad.ai_description && (
+                          {/* {ad.ai_description && (
                             <div className="pt-2">
                               <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Group Description</p>
                               <p className="text-[9px] text-zinc-600 leading-snug line-clamp-2">{ad.ai_description.replace(/\*\*|^\W+|\W+$/g, '').slice(0, 140)}</p>
@@ -549,7 +549,7 @@ function HomeContent(): JSX.Element {
                               <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Concept</p>
                               <p className="text-[9px] text-zinc-700 leading-snug line-clamp-2">{ad.concept}</p>
                             </div>
-                          )}
+                          )} */}
                         </div>
                       </Link>
                     ))}

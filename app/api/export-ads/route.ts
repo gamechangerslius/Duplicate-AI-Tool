@@ -215,7 +215,9 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const csv = toCSV(rows, { delimiter, columns: columnOrder, headers: headerMap });
+    const isEmptyValue = (v: any) => v === null || v === undefined || v === '';
+    const nonEmptyColumns = columnOrder.filter(col => rows.some(r => !isEmptyValue(r[col])));
+    const csv = toCSV(rows, { delimiter, columns: nonEmptyColumns, headers: headerMap });
     const filename = `ads_export_${businessId}_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`;
     // Prepend UTF-8 BOM to help Excel detect encoding and delimiter
     const BOM = '\uFEFF';

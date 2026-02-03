@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import dayjs from 'dayjs';
 
 interface GroupMetadataProps {
   vectorGroup: number | null;
@@ -11,6 +12,11 @@ export function GroupMetadata({ vectorGroup, businessId }: GroupMetadataProps) {
   const [metadata, setMetadata] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const formatDate = (value?: string | null) => {
+    if (!value) return 'N/A';
+    const d = dayjs(value);
+    return d.isValid() ? d.format('YYYY-MM-DD') : 'N/A';
+  };
 
   useEffect(() => {
     if (vectorGroup === -1 || vectorGroup == null || !businessId) {
@@ -115,14 +121,14 @@ export function GroupMetadata({ vectorGroup, businessId }: GroupMetadataProps) {
           <div className="text-xs font-semibold text-green-700 mb-1 flex items-center gap-1">
             📅 First Seen
           </div>
-          <div className="text-xs font-mono text-green-900">{metadata.first_seen || 'N/A'}</div>
+          <div className="text-xs font-mono text-green-900">{formatDate(metadata.first_seen)}</div>
         </div>
 
         <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">
           <div className="text-xs font-semibold text-orange-700 mb-1 flex items-center gap-1">
             📅 Last Seen
           </div>
-          <div className="text-xs font-mono text-orange-900">{metadata.last_seen || 'N/A'}</div>
+          <div className="text-xs font-mono text-orange-900">{formatDate(metadata.last_seen)}</div>
         </div>
 
         <div className="bg-red-50 p-3 rounded-lg border border-red-200 col-span-2">
