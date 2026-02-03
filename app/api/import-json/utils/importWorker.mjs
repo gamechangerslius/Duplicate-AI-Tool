@@ -154,38 +154,122 @@ async function runImport(task) {
         continue;
       }
 
-      // Determine media
+      // Determine media - comprehensive search across all possible locations
       const snapshot = item.snapshot || {};
-      const isVideo = snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0;
+      
       let storagePath = null;
       let videoStoragePath = null;
       let originalVideoUrl = null;
-
-      if (isVideo) {
+      let mediaSource = null; // Track where media was found
+      
+      // === VIDEO SEARCH ===
+      // 1. Check direct videos array
+      if (!originalVideoUrl && snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0) {
         const video = snapshot.videos[0] || {};
         const videoUrl = video.video_hd_url || video.video_sd_url || video.url;
         const previewUrl = video.video_preview_image_url;
 
-        // Save video URL instead of downloading
         if (videoUrl) {
           originalVideoUrl = videoUrl;
-          sendLog(taskId, `[worker] saved video URL for ${adArchiveId}: ${videoUrl}`);
+          mediaSource = 'snapshot.videos[0]';
+          sendLog(taskId, `[worker] ✓ Found video in ${mediaSource} for ${adArchiveId}`);
         }
 
-        if (previewUrl) {
+        if (previewUrl && !storagePath) {
           try {
             const { uint8, contentType } = await downloadToUint8Array(previewUrl);
             const ext = contentType.includes('png') ? 'png' : 'jpg';
             const pathKey = `${businessSlug}/${adArchiveId}_preview.${ext}`;
             await uploadBufferToStorage(adminClient, 'creatives', pathKey, uint8, contentType);
             storagePath = pathKey;
-            sendLog(taskId, `[worker] uploaded preview for ${adArchiveId} -> ${pathKey}`);
+            sendLog(taskId, `[worker] ✓ Uploaded video preview from ${mediaSource} -> ${pathKey}`);
           } catch (e) {
-            sendLog(taskId, `[worker] [ERROR] preview download/upload failed for ${adArchiveId}: ${e.message}`);
+            sendLog(taskId, `[worker] [WARN] preview upload failed (${mediaSource}): ${e.message}`);
           }
         }
-      } else {
-        const imageUrl = snapshot.images?.[0]?.url || snapshot.cards?.[0]?.url || null;
+      }
+      
+      // 2. Check cards for videos
+      if (!originalVideoUrl && snapshot.cards && Array.isArray(snapshot.cards) && snapshot.cards.length > 0) {
+        for (let i = 0; i < snapshot.cards.length; i++) {
+          const card = snapshot.cards[i];
+          const videoUrl = card.video_hd_url || card.video_sd_url;
+          const previewUrl = card.video_preview_image_url;
+
+          if (videoUrl) {
+            originalVideoUrl = videoUrl;
+            mediaSource = `snapshot.cards[${i}]`;
+            sendLog(taskId, `[worker] ✓ Found video in ${mediaSource} for ${adArchiveId}`);
+            
+            if (previewUrl && !storagePath) {
+              try {
+                const { uint8, contentType } = await downloadToUint8Array(previewUrl);
+                const ext = contentType.includes('png') ? 'png' : 'jpg';
+                const pathKey = `${businessSlug}/${adArchiveId}_preview.${ext}`;
+                await uploadBufferToStorage(adminClient, 'creatives', pathKey, uint8, contentType);
+                storagePath = pathKey;
+                sendLog(taskId, `[worker] ✓ Uploaded video preview from ${mediaSource} -> ${pathKey}`);
+              } catch (e) {
+                sendLog(taskId, `[worker] [WARN] preview upload failed (${mediaSource}): ${e.message}`);
+              }
+            }
+            break;
+          }
+        }
+      }
+      
+      // 3. Check extra_videos
+      if (!originalVideoUrl && snapshot.extra_videos && Array.isArray(snapshot.extra_videos) && snapshot.extra_videos.length > 0) {
+        const video = snapshot.extra_videos[0];
+        const videoUrl = video?.video_hd_url || video?.video_sd_url || video?.url;
+        if (videoUrl) {
+          originalVideoUrl = videoUrl;
+          mediaSource = 'snapshot.extra_videos[0]';
+          sendLog(taskId, `[worker] ✓ Found video in ${mediaSource} for ${adArchiveId}`);
+        }
+      }
+
+      // === IMAGE SEARCH (only if no video found or need preview) ===
+      if (!storagePath) {
+        let imageUrl = null;
+        
+        // 1. Direct images array
+        if (!imageUrl && snapshot.images && Array.isArray(snapshot.images) && snapshot.images.length > 0) {
+          for (let i = 0; i < snapshot.images.length; i++) {
+            const img = snapshot.images[i];
+            imageUrl = img?.original_image_url || img?.resized_image_url || img?.url;
+            if (imageUrl) {
+              mediaSource = `snapshot.images[${i}]`;
+              sendLog(taskId, `[worker] ✓ Found image in ${mediaSource} for ${adArchiveId}`);
+              break;
+            }
+          }
+        }
+        
+        // 2. Cards with images (check all cards)
+        if (!imageUrl && snapshot.cards && Array.isArray(snapshot.cards) && snapshot.cards.length > 0) {
+          for (let i = 0; i < snapshot.cards.length; i++) {
+            const card = snapshot.cards[i];
+            imageUrl = card?.original_image_url || card?.resized_image_url;
+            if (imageUrl) {
+              mediaSource = `snapshot.cards[${i}]`;
+              sendLog(taskId, `[worker] ✓ Found image in ${mediaSource} for ${adArchiveId}`);
+              break;
+            }
+          }
+        }
+        
+        // 3. Extra images
+        if (!imageUrl && snapshot.extra_images && Array.isArray(snapshot.extra_images) && snapshot.extra_images.length > 0) {
+          const img = snapshot.extra_images[0];
+          imageUrl = img?.url || img?.original_image_url || img?.resized_image_url;
+          if (imageUrl) {
+            mediaSource = 'snapshot.extra_images[0]';
+            sendLog(taskId, `[worker] ✓ Found image in ${mediaSource} for ${adArchiveId}`);
+          }
+        }
+        
+        // Upload image if found
         if (imageUrl) {
           try {
             const { uint8, contentType } = await downloadToUint8Array(imageUrl);
@@ -193,16 +277,18 @@ async function runImport(task) {
             const pathKey = `${businessSlug}/${adArchiveId}.${ext}`;
             await uploadBufferToStorage(adminClient, 'creatives', pathKey, uint8, contentType);
             storagePath = pathKey;
-            sendLog(taskId, `[worker] uploaded image for ${adArchiveId} -> ${pathKey}`);
+            sendLog(taskId, `[worker] ✓ Uploaded image from ${mediaSource} -> ${pathKey}`);
           } catch (e) {
-            sendLog(taskId, `[worker] [ERROR] image download/upload failed for ${adArchiveId}: ${e.message}`);
+            sendLog(taskId, `[worker] [ERROR] image upload failed (${mediaSource}): ${e.message}`);
           }
         }
       }
 
+      // Check if we have any media at all - skip if not found
       if (!storagePath && !videoStoragePath && !originalVideoUrl) {
-        summary.errors++; summary.errorDetails.push({ ad_archive_id: adArchiveId, reason: 'no_media_uploaded' });
-        sendLog(taskId, `[worker] [ERROR] no media uploaded for ${adArchiveId}`);
+        summary.errors++; 
+        summary.errorDetails.push({ ad_archive_id: adArchiveId, reason: 'no_media_found' });
+        sendLog(taskId, `[worker] [SKIP] No media found in any location for ${adArchiveId}`);
         continue;
       }
 
