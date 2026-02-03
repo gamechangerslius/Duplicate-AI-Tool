@@ -399,6 +399,14 @@ export async function POST(req: Request) {
           importError: importErr?.message 
         });
       }
+    } else {
+      // Log why auto-import was not triggered
+      if (autoImport !== true) {
+        log(`ℹ️ Auto-import disabled (autoImport=${autoImport})`);
+      }
+      if (!businessId) {
+        log(`⚠️ Auto-import skipped: no businessId provided`);
+      }
     }
 
     // Return Apify results directly to caller

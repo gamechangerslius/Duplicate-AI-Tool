@@ -75,7 +75,60 @@ export async function fetchAds(
     const from = (page - 1) * perPage;
     const to = from + perPage - 1;
 
-    // 1. UPDATED SELECT: Adding ai_description from ads_groups_test
+    // Collect filtered vector_groups based on ad-level filters
+    let filteredVectorGroupsSet: Set<number> | null = null;
+
+    // Helper to intersect sets
+    const intersectWithSet = (newVectorGroups: number[], existingSet: Set<number> | null): Set<number> => {
+      const newSet = new Set(newVectorGroups);
+      if (existingSet === null) return newSet;
+      return new Set([...existingSet].filter(vg => newSet.has(vg)));
+    };
+
+    // Filter by page_name - get vector_groups that contain ads with this page_name
+    if (filters.pageName) {
+      const { data: adsByPage } = await supabase
+        .from(ADS_TABLE)
+        .select('vector_group', { count: 'exact' })
+        .eq('business_id', filters.businessId)
+        .eq('page_name', filters.pageName);
+      
+      const vectorGroupsFromPage = adsByPage?.map(a => a.vector_group).filter(v => v !== null && v !== undefined) || [];
+      filteredVectorGroupsSet = intersectWithSet(vectorGroupsFromPage, filteredVectorGroupsSet);
+    }
+
+    // Filter by start/end dates - get vector_groups with ads in date range
+    if (filters.startDate || filters.endDate) {
+      let dateQuery = supabase
+        .from(ADS_TABLE)
+        .select('vector_group', { count: 'exact' })
+        .eq('business_id', filters.businessId);
+      
+      if (filters.startDate) {
+        dateQuery = dateQuery.gte('start_date_formatted', `${filters.startDate}T00:00:00Z`);
+      }
+      if (filters.endDate) {
+        dateQuery = dateQuery.lte('end_date_formatted', `${filters.endDate}T23:59:59Z`);
+      }
+      
+      const { data: adsByDate } = await dateQuery;
+      const vectorGroupsFromDate = adsByDate?.map(a => a.vector_group).filter(v => v !== null && v !== undefined) || [];
+      filteredVectorGroupsSet = intersectWithSet(vectorGroupsFromDate, filteredVectorGroupsSet);
+    }
+
+    // Filter by display format
+    if (filters.displayFormat && filters.displayFormat !== 'ALL') {
+      const { data: adsByFormat } = await supabase
+        .from(ADS_TABLE)
+        .select('vector_group', { count: 'exact' })
+        .eq('business_id', filters.businessId)
+        .eq('display_format', filters.displayFormat);
+      
+      const vectorGroupsFromFormat = adsByFormat?.map(a => a.vector_group).filter(v => v !== null && v !== undefined) || [];
+      filteredVectorGroupsSet = intersectWithSet(vectorGroupsFromFormat, filteredVectorGroupsSet);
+    }
+
+    // Build main query for groups
     let query = supabase
       .from(ADS_GROUPS_TABLE)
       .select(`
@@ -87,22 +140,36 @@ export async function fetchAds(
       `, { count: 'exact' })
       .eq('business_id', filters.businessId);
 
-    // 2. Filter by duplicates range
+    // Apply collected vector_groups filter
+    if (filteredVectorGroupsSet !== null && filteredVectorGroupsSet.size > 0) {
+      query = query.in('vector_group', Array.from(filteredVectorGroupsSet));
+    } else if (filteredVectorGroupsSet !== null && filteredVectorGroupsSet.size === 0) {
+      // No matching vector groups for this filter combination
+      return { ads: [], total: 0 };
+    }
+
+    // Filter by duplicates range
     if (filters.duplicatesRange) {
       query = query.gte('items', filters.duplicatesRange.min);
       query = query.lte('items', filters.duplicatesRange.max);
     }
 
-    // 3. AI Description Filter
+    // AI Description Filter
     if (filters.aiDescription) {
-      query = query.filter('vector_group', 'in', 
-        supabase.from(ADS_GROUPS_STATUS_VIEW)
-          .select('vector_group')
-          .ilike('ai_description', `%${filters.aiDescription}%`)
-      );
+      const { data: groupsByAi } = await supabase
+        .from(ADS_GROUPS_STATUS_VIEW)
+        .select('vector_group')
+        .ilike('ai_description', `%${filters.aiDescription}%`);
+      
+      const vectorGroupsFromAi = groupsByAi?.map(g => g.vector_group).filter(Boolean) || [];
+      if (vectorGroupsFromAi.length > 0) {
+        query = query.in('vector_group', vectorGroupsFromAi);
+      } else {
+        return { ads: [], total: 0 };
+      }
     }
 
-    // 4. Sorting logic
+    // Sorting logic
     query = query.order('items', { ascending: false });
 
     const { data: groups, count, error } = await query.range(from, to);
@@ -110,7 +177,7 @@ export async function fetchAds(
 
     const businessSlug = (groups[0] as any)?.business?.slug;
 
-    // 5. Fetch Ad details (bulk)
+    // Fetch Ad details (bulk)
     const repIds = groups.map(g => g.rep_ad_archive_id).filter(Boolean);
     const { data: adDetails } = await supabase
       .from(ADS_TABLE)
@@ -119,7 +186,7 @@ export async function fetchAds(
 
     const adMap = new Map(adDetails?.map(ad => [ad.ad_archive_id, ad]));
 
-    // 6. Assemble the final objects
+    // Assemble the final objects
     const ads: Ad[] = await Promise.all(groups.map(async (g) => {
       const baseAd = adMap.get(g.rep_ad_archive_id);
       const imageUrl = await getCreativeUrl(g.rep_ad_archive_id, businessSlug);
@@ -130,7 +197,6 @@ export async function fetchAds(
         vector_group: g.vector_group,
         duplicates_count: g.items,
         image_url: imageUrl,
-        // UPDATED: Now using ai_description directly from the groups table
         ai_description: g.ai_description || baseAd?.ai_description, 
         meta_ad_url: `https://www.facebook.com/ads/library/?id=${g.rep_ad_archive_id}`
       } as Ad;

@@ -45,6 +45,7 @@ export default function SetupPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [ownedBusinessIds, setOwnedBusinessIds] = useState<string[]>([]);
   const [logs, setLogs] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string; timestamp: number }>>([]);
+  const [autoImport, setAutoImport] = useState(true);
 
   useEffect(() => {
     const initUser = async () => {
@@ -375,7 +376,12 @@ export default function SetupPage() {
       const res = await fetch('/api/forward-webhook', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ links: linksPayload, businessId: selectedBusinessId, taskId })
+        body: JSON.stringify({ 
+          links: linksPayload, 
+          businessId: selectedBusinessId, 
+          autoImport: autoImport,
+          taskId 
+        })
       });
       if (!res.ok) throw new Error('Request failed');
       addLog('success', '✅ Data sent to Apify successfully');
@@ -451,6 +457,33 @@ export default function SetupPage() {
                       )}
                     </div>
                   )}
+                </div>
+
+                {/* Auto-import toggle */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-500 uppercase">Auto-import</label>
+                  <div className="h-11 px-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center">
+                    <button
+                      onClick={() => setAutoImport(!autoImport)}
+                      className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                        autoImport ? 'bg-indigo-600' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-lg transition-transform ${
+                          autoImport ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                    <span className="ml-3 text-sm font-semibold text-slate-700">
+                      {autoImport ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {autoImport 
+                      ? 'Creatives will be automatically imported to database'
+                      : 'Creatives will only be scraped (manual import needed)'}
+                  </p>
                 </div>
               </div>
             </section>
