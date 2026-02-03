@@ -11,16 +11,9 @@ function encodeActorPath(actorId: string) {
   return actorId.split('/').map(encodeURIComponent).join('/');
 }
 
-// ----------------------
-// Helper: Sleep for ms
-// ----------------------
 function sleep(ms: number) {
   return new Promise((res) => setTimeout(res, ms));
 }
-
-// ----------------------
-// Helper: safe JSON stringify
-// ----------------------
 function safeJsonStringify(v: any) {
   try {
     return JSON.stringify(v);
@@ -29,9 +22,6 @@ function safeJsonStringify(v: any) {
   }
 }
 
-// ----------------------
-// Normalize and validate URLs
-// ----------------------
 type NormalizedLink = { url: string; maxAds?: number };
 
 function normalizeAndValidateUrls(rawLinks: any[], defaultMax: number | undefined): { links: NormalizedLink[]; rejected: any[] } {
@@ -61,7 +51,7 @@ function normalizeAndValidateUrls(rawLinks: any[], defaultMax: number | undefine
       if (!Number.isFinite(maxAdsVal as number)) {
         // Read possible query params from the URL
         const qp = u.searchParams;
-        const candKeys = ["maxAds", "max_ads", "limit", "count", "max", "maxCreatives"]; 
+        const candKeys = ["maxAds", "max_ads", "limit", "count", "max", "maxCreatives"];
         for (const k of candKeys) {
           const v = qp.get(k);
           if (v != null) {
@@ -93,24 +83,6 @@ function normalizeAndValidateUrls(rawLinks: any[], defaultMax: number | undefine
 }
 
 // ----------------------
-// Create Supabase admin client
-// ----------------------
-function createAdminClient(reqId: string) {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !serviceKey) throw new Error("Supabase admin config missing");
-
-  const { createClient: create } = require("@supabase/supabase-js");
-  const client = create(url, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    db: { schema: 'public' },
-  });
-
-  return client;
-}
-
-// ----------------------
 // Start async Apify run (no polling) and return start response
 // ----------------------
 async function startAsyncApify(runInput: any, reqId: string, apifyActorId: string, apifyToken: string, clientTaskId: string | null, log?: (m: string) => void) {
@@ -119,6 +91,10 @@ async function startAsyncApify(runInput: any, reqId: string, apifyActorId: strin
     const msg = `🟡 Starting async Apify run`;
     console.log(`[${reqId}] ${msg}`);
     log?.(msg);
+
+    // Log the runInput for debugging (so you can confirm count / options)
+    console.log(`[${reqId}] ▶ runInput:`, safeJsonStringify(runInput).slice(0, 2000));
+    log?.(`▶ runInput: ${safeJsonStringify(runInput).slice(0, 2000)}`);
 
     const startResp = await fetch(startUrl, {
       method: "POST",
@@ -142,9 +118,11 @@ async function startAsyncApify(runInput: any, reqId: string, apifyActorId: strin
 
 // ----------------------
 // Poll an async Apify run until completion, then fetch dataset items
+// NOTE: we intentionally DO NOT trim results here — we want Apify actor to stop by itself.
+// If actor misbehaves and returns more items than requested, we will log a warning so you can detect it.
 // ----------------------
-async function runApifyAsyncPoll(runInput: any, reqId: string, apifyActorId: string, apifyToken: string, perLinkLimit: number | undefined, totalTimeoutSec: number, log?: (m: string) => void) {
-  const start = await startAsyncApify(runInput, reqId, apifyActorId, apifyToken, null, log);
+async function runApifyAsyncPoll(runInput: any, reqId: string, apifyActorId: string, apifyToken: string, perLinkLimit: number | undefined, totalTimeoutSec: number, clientTaskId: string | null, log?: (m: string) => void) {
+  const start = await startAsyncApify(runInput, reqId, apifyActorId, apifyToken, clientTaskId, log);
   const runId = start?.data?.id || start?.id || start?.data?.runId || start?.runId;
   if (!runId) {
     console.log(`[${reqId}] ❌ Failed to start async run`);
@@ -185,15 +163,19 @@ async function runApifyAsyncPoll(runInput: any, reqId: string, apifyActorId: str
     return null;
   }
 
-  // Fetch dataset items
-  const lim = Number.isFinite(perLinkLimit as number) ? Number(perLinkLimit) : undefined;
-  const itemsUrl = `https://api.apify.com/v2/datasets/${encodeURIComponent(datasetId)}/items?token=${encodeURIComponent(apifyToken)}&clean=true${lim ? `&limit=${encodeURIComponent(String(lim))}` : ''}`;
+  // Fetch dataset items (do not rely on this to stop scraping — actor should have stopped)
+  const itemsUrl = `https://api.apify.com/v2/datasets/${encodeURIComponent(datasetId)}/items?token=${encodeURIComponent(apifyToken)}&clean=true`;
   try {
     const itemsResp = await fetch(itemsUrl);
     const text = await itemsResp.text();
     let data: any = null; try { data = JSON.parse(text); } catch {}
     if (Array.isArray(data)) {
       log?.(`✅ Retrieved ${data.length} items from dataset`);
+      if (Number.isFinite(perLinkLimit as number) && data.length > (perLinkLimit as number)) {
+        const warn = `⚠️ Actor returned ${data.length} items but requested count=${perLinkLimit}. Actor may not have honored the limit.`;
+        console.warn(`[${reqId}] ${warn}`);
+        log?.(warn);
+      }
       return data;
     }
   } catch (e: any) {
@@ -205,12 +187,13 @@ async function runApifyAsyncPoll(runInput: any, reqId: string, apifyActorId: str
 
 // ----------------------
 // Run Apify with fallback from sync → async
+// We do NOT trim results here — we expect the actor to stop itself when `count` is used.
+// If run-sync times out, fallback to async polling (then read dataset).
 // ----------------------
 async function runApifyWithFallback(runInput: any, reqId: string, apifyActorId: string, apifyToken: string, clientTaskId: string | null, timeoutSec: number, perLinkLimit?: number, log?: (m: string) => void) {
   const syncUrl = `https://api.apify.com/v2/acts/${encodeActorPath(apifyActorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}&timeout=${encodeURIComponent(String(timeoutSec))}`;
   console.log(`[${reqId}] 🚀 Running run-sync-get-dataset-items, timeout=${timeoutSec}s`);
   log?.(`🚀 run-sync-get-dataset-items (timeout=${timeoutSec}s)`);
-  // run-sync started for URL
   console.log(`[${reqId}] 🚀 run-sync start for ${runInput.urls?.[0]?.url || 'unknown'}`);
   log?.(`▶️ run-sync start for ${runInput.urls?.[0]?.url || 'unknown'}`);
 
@@ -221,9 +204,13 @@ async function runApifyWithFallback(runInput: any, reqId: string, apifyActorId: 
     let data: any = null;
     try { data = JSON.parse(text); } catch {}
 
-      if (Array.isArray(data) && data.length > 0) {
-      console.log(`[${reqId}] ✅ run-sync returned ${data.length} items`);
+    if (Array.isArray(data) && data.length > 0) {
       log?.(`✅ run-sync returned ${data.length} items`);
+      if (Number.isFinite(perLinkLimit as number) && data.length > (perLinkLimit as number)) {
+        const warn = `⚠️ run-sync returned ${data.length} items but requested count=${perLinkLimit}. Actor may not have honored the limit.`;
+        console.warn(`[${reqId}] ${warn}`);
+        log?.(warn);
+      }
       return data;
     }
 
@@ -231,7 +218,7 @@ async function runApifyWithFallback(runInput: any, reqId: string, apifyActorId: 
     if (resp.status === 408 || data?.error?.type === 'run-timeout-exceeded') {
       console.log(`[${reqId}] ⚠️ run-sync timeout, starting async run with polling`);
       log?.(`⚠️ run-sync timeout, switching to async + polling`);
-      const polled = await runApifyAsyncPoll(runInput, reqId, apifyActorId, apifyToken, perLinkLimit, Math.max(600, timeoutSec), log);
+      const polled = await runApifyAsyncPoll(runInput, reqId, apifyActorId, apifyToken, perLinkLimit, Math.max(600, timeoutSec), clientTaskId, log);
       return polled;
     }
 
@@ -304,25 +291,51 @@ export async function POST(req: Request) {
 
     const allResults: any[] = [];
     for (const entry of normalizedLinks) {
+      // Determine per-link limit: clamp between 1 and 1000
       const perLinkLimit = Math.min(Math.max(Number(entry.maxAds || defaultMaxAds || 50), 1), 1000);
-      log(`➡️ Start link: ${entry.url} (maxAds=${perLinkLimit})`);
+      log(`➡️ Start link: ${entry.url} (count=${perLinkLimit})`);
+
+      // Build runInput matching the working example for this actor.
+      // This is important: 'count' + scrapePageAds + scrapeAdDetails=false will hit actor's stop-branch.
       const runInput = {
-        urls: [{ url: entry.url }],
-        maxAds: perLinkLimit,
-        limit: perLinkLimit, // be defensive if actor uses a different key
-        viewAllAds: true,
-        includeAdsData: true,
+        count: perLinkLimit,
+        scrapeAdDetails: false,
+        scrapePageAds: {
+          activeStatus: "all",
+        },
+        urls: [
+          {
+            url: entry.url,
+            method: "GET",
+          },
+        ],
       };
-      const results: any = await runApifyWithFallback(runInput, reqId, apifyActorId, apifyToken, clientTaskId, apifyTimeout, perLinkLimit, log);
 
-      if (results && Array.isArray(results)) {
-        allResults.push(...results);
-        log(`📦 Collected ${results.length} item(s) for link`);
-        continue;
+      try {
+        // Log runInput (short)
+        log?.(`▶ Sent to Apify: count=${perLinkLimit} url=${entry.url}`);
+
+        const results: any = await runApifyWithFallback(runInput, reqId, apifyActorId, apifyToken, clientTaskId, apifyTimeout, perLinkLimit, log);
+
+        if (results && Array.isArray(results)) {
+          // Do NOT trim results — user requested actor to stop itself by `count`.
+          allResults.push(...results);
+          log(`📦 Collected ${results.length} item(s) for link`);
+          // Warn if actor returned more than requested (so you can detect misbehavior)
+          if (results.length > perLinkLimit) {
+            const warn = `⚠️ Actor returned ${results.length} items but requested count=${perLinkLimit}`;
+            console.warn(`[${reqId}] ${warn}`);
+            log?.(warn);
+          }
+          continue;
+        } else {
+          log(`⚠️ No results for link ${entry.url}`);
+        }
+      } catch (err: any) {
+        console.log(`[${reqId}] ❌ Error processing link ${entry.url}:`, err?.message);
+        log?.(`❌ Error processing link ${entry.url}: ${err?.message}`);
+        // continue to next link
       }
-
-      // If no results even after polling, continue to next link
-      // otherwise continue to next link
     }
 
     if (!allResults.length) {

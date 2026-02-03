@@ -97,11 +97,43 @@ export async function GET(req: NextRequest) {
     const { data: ads, error } = await adsQuery;
     if (error) return NextResponse.json({ message: error.message }, { status: 500 });
 
+    // Build group metadata map: items count, representative id, group AI description
+    const vectorGroups = Array.from(new Set((ads || [])
+      .map((a: any) => Number(a.vector_group))
+      .filter(v => Number.isFinite(v) && v !== -1)));
+
+    const groupsMap = new Map<number, { items: number; repId?: string; ai_description?: string }>();
+    if (vectorGroups.length) {
+      const { data: groupRows } = await supabase
+        .from('ads_groups_test')
+        .select('vector_group, items, rep_ad_archive_id, ai_description')
+        .eq('business_id', businessId)
+        .in('vector_group', vectorGroups);
+      (groupRows || []).forEach((g: any) => {
+        groupsMap.set(Number(g.vector_group), {
+          items: Number(g.items) || 0,
+          repId: g.rep_ad_archive_id || undefined,
+          ai_description: g.ai_description || undefined
+        });
+      });
+    }
+
+    // Fetch representative ad texts if available
+    let repTextMap = new Map<string, string>();
+    const repIds = Array.from(new Set(Array.from(groupsMap.values()).map(v => v.repId).filter(Boolean))) as string[];
+    if (repIds.length) {
+      const { data: reps } = await supabase
+        .from('ads')
+        .select('ad_archive_id, text')
+        .in('ad_archive_id', repIds);
+      (reps || []).forEach((r: any) => repTextMap.set(String(r.ad_archive_id), r.text || ''));
+    }
+
     // Column order and friendly headers
     const columnOrder = [
       'ad_archive_id','business_id','page_name','display_format','vector_group','duplicates_count',
       'created_at','start_date_formatted','end_date_formatted',
-      'title','text','caption','link_url','publisher_platform','ai_description',
+      'title','text','rep_ad_text','group_description','concept','caption','link_url','publisher_platform','ai_description',
       'meta_ad_url','image_public_url','video_public_url','media_hd_url'
     ];
     const headerMap: Record<string, string> = {
@@ -117,6 +149,9 @@ export async function GET(req: NextRequest) {
       title: 'Title',
       text: 'Text',
       caption: 'Caption',
+      rep_ad_text: 'Representative Ad Text',
+      group_description: 'Group Description',
+      concept: 'Concept',
       link_url: 'Link URL',
       publisher_platform: 'Platform',
       ai_description: 'AI Description',
@@ -141,18 +176,25 @@ export async function GET(req: NextRequest) {
 
       const meta_ad_url = ad.meta_ad_url || ad.ad_library_url || (ad.ad_archive_id ? `https://www.facebook.com/ads/library/?id=${ad.ad_archive_id}` : null);
 
+      const groupInfo = groupsMap.get(Number(ad.vector_group));
+      const repText = groupInfo?.repId ? repTextMap.get(groupInfo.repId) || null : null;
+      const groupDescription = groupInfo?.ai_description || ad.ai_description || null;
+
       return {
         ad_archive_id: ad.ad_archive_id,
         business_id: ad.business_id,
         page_name: ad.page_name,
         display_format: ad.display_format,
         vector_group: ad.vector_group,
-        duplicates_count: ad.items || ad.group_items || undefined,
+        duplicates_count: (groupInfo?.items ?? (ad.items || ad.group_items)) || undefined,
         created_at: ad.created_at,
         start_date_formatted: ad.start_date_formatted,
         end_date_formatted: ad.end_date_formatted,
         title: ad.title,
         text: ad.text,
+        rep_ad_text: repText,
+        group_description: groupDescription,
+        concept: ad.concept || undefined,
         caption: ad.caption,
         link_url: ad.link_url,
         publisher_platform: ad.publisher_platform,

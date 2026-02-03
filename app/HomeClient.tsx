@@ -527,6 +527,17 @@ function HomeContent(): JSX.Element {
                             ID: {ad.ad_archive_id}
                           </p>
 
+                          {(ad.start_date_formatted || ad.end_date_formatted) && (
+                            <div className="pt-2">
+                              <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Period</p>
+                              <p className="text-[9px] text-zinc-600">
+                                {ad.start_date_formatted && new Date(ad.start_date_formatted).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                {ad.start_date_formatted && ad.end_date_formatted && ' — '}
+                                {ad.end_date_formatted && new Date(ad.end_date_formatted).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </p>
+                            </div>
+                          )}
+
                           {ad.ai_description && (
                             <div className="pt-2">
                               <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Group Description</p>
