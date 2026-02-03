@@ -148,9 +148,9 @@ async function runImport(task) {
         sendLog(taskId, `[worker] [WARN] checking existing failed: ${exErr.message}`);
       }
 
-      if (existing && (existing.storage_path || existing.video_storage_path)) {
+      if (existing && existing.storage_path) {
         summary.skipped++;
-        sendLog(taskId, `[worker] [SKIP] already exists with media: ${adArchiveId}`);
+        sendLog(taskId, `[worker] [SKIP] already exists with image: ${adArchiveId}`);
         continue;
       }
 
@@ -161,6 +161,7 @@ async function runImport(task) {
       let videoStoragePath = null;
       let originalVideoUrl = null;
       let mediaSource = null;
+      const detectedDisplayFormat = (item.display_format || snapshot.display_format || snapshot?.display_format_type || null);
       
       // === VIDEO SEARCH - just save URL, don't download ===
       // Priority: direct videos → cards → extra_videos
@@ -192,15 +193,34 @@ async function runImport(task) {
       }
 
       // === IMAGE SEARCH - take first found image and download it ===
-      // Priority: direct images → cards → extra_images
+      // For VIDEO/DCO: always try to grab a preview image first
       let imageUrl = null;
-      
-      if (snapshot.images && Array.isArray(snapshot.images) && snapshot.images.length > 0) {
+
+      if (originalVideoUrl || String(detectedDisplayFormat).toUpperCase() === 'DCO') {
+        // 1) Video previews from snapshot.videos
+        if (snapshot.videos && Array.isArray(snapshot.videos) && snapshot.videos.length > 0) {
+          const video = snapshot.videos[0];
+          imageUrl = video?.video_preview_image_url || null;
+          if (imageUrl) mediaSource = 'snapshot.videos[0].video_preview_image_url';
+        }
+
+        // 2) Video previews from cards
+        if (!imageUrl && snapshot.cards && Array.isArray(snapshot.cards)) {
+          const cardWithPreview = snapshot.cards.find(c => c.video_preview_image_url);
+          if (cardWithPreview) {
+            imageUrl = cardWithPreview.video_preview_image_url;
+            mediaSource = 'snapshot.cards[].video_preview_image_url';
+          }
+        }
+      }
+
+      // Fallback: regular images (first found)
+      if (!imageUrl && snapshot.images && Array.isArray(snapshot.images) && snapshot.images.length > 0) {
         const img = snapshot.images[0];
         imageUrl = img?.original_image_url || img?.resized_image_url || img?.url;
         if (imageUrl) mediaSource = 'snapshot.images[0]';
       }
-      
+
       if (!imageUrl && snapshot.cards && Array.isArray(snapshot.cards)) {
         const cardWithImage = snapshot.cards.find(c => c.original_image_url || c.resized_image_url);
         if (cardWithImage) {
@@ -208,7 +228,7 @@ async function runImport(task) {
           mediaSource = 'snapshot.cards[]';
         }
       }
-      
+
       if (!imageUrl && snapshot.extra_images && Array.isArray(snapshot.extra_images) && snapshot.extra_images.length > 0) {
         const img = snapshot.extra_images[0];
         imageUrl = img?.url || img?.original_image_url || img?.resized_image_url;
@@ -306,13 +326,19 @@ async function runImport(task) {
       const total_active_time = item.total_active_time || item.total_active || null;
       const urlField = item.url || snapshot.url || null;
       const ad_library_url = item.ad_library_url || item.ad_library_link || null;
-      const title = item.title || item.headline || snapshot.title || null;
+      let title = item.title || item.headline || snapshot.title || null;
+      if (!title) {
+        const cardsForTitle = snapshot.cards || item.cards || null;
+        if (Array.isArray(cardsForTitle) && cardsForTitle.length > 0) {
+          const firstCardWithTitle = cardsForTitle.find(c => c?.title || c?.headline);
+          title = firstCardWithTitle?.title || firstCardWithTitle?.headline || null;
+        }
+      }
       const cards = snapshot.cards || item.cards || null;
       const cards_json = cards || null;
       const cards_count = Array.isArray(cards) ? cards.length : (item.cards_count || null);
       const competitor_niche = item.competitor_niche || item.niche || null;
       const isVideo = !!originalVideoUrl;
-      const detectedDisplayFormat = (item.display_format || snapshot.display_format || snapshot?.display_format_type || null);
 
       const adData = {
         business_id: businessId,
