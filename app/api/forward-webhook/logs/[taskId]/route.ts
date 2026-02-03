@@ -49,7 +49,6 @@ export async function GET(req: NextRequest, { params }: { params: { taskId: stri
           }
           await new Promise(r => setTimeout(r, TICK_MS));
         }
-        controller.enqueue(`data: ${nowStamp()} Log stream finished\n\n`);
         controller.close();
       }
     }),

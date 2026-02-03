@@ -311,11 +311,13 @@ async function runImport(task) {
       const cards_json = cards || null;
       const cards_count = Array.isArray(cards) ? cards.length : (item.cards_count || null);
       const competitor_niche = item.competitor_niche || item.niche || null;
+      const isVideo = !!originalVideoUrl;
+      const detectedDisplayFormat = (item.display_format || snapshot.display_format || snapshot?.display_format_type || null);
 
       const adData = {
         business_id: businessId,
         ad_archive_id: adArchiveId,
-        display_format: isVideo ? 'VIDEO' : 'IMAGE',
+        display_format: detectedDisplayFormat || (isVideo ? 'VIDEO' : 'IMAGE'),
         storage_path: storagePath,
         video_storage_path: videoStoragePath,
         original_video_url: originalVideoUrl,
