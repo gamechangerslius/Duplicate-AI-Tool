@@ -117,6 +117,12 @@ function HomeContent(): JSX.Element {
     return dates.sort((a, b) => dayjs(b).unix() - dayjs(a).unix());
   }, [ads]);
 
+  const formatPeriodDate = (value?: string | null) => {
+    if (!value) return '';
+    const d = dayjs(value);
+    return d.isValid() ? d.format('MMM D, YYYY') : '';
+  };
+
   // 1. Initial Load & URL Sync
   useEffect(() => {
     const init = async () => {
@@ -527,13 +533,13 @@ function HomeContent(): JSX.Element {
                             ID: {ad.ad_archive_id}
                           </p>
 
-                          {(ad.start_date_formatted || ad.end_date_formatted) && (
+                          {(ad.group_first_seen || ad.group_last_seen || ad.start_date_formatted || ad.end_date_formatted) && (
                             <div className="pt-2">
                               <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Period</p>
                               <p className="text-[9px] text-zinc-600">
-                                {ad.start_date_formatted && new Date(ad.start_date_formatted).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                {ad.start_date_formatted && ad.end_date_formatted && ' — '}
-                                {ad.end_date_formatted && new Date(ad.end_date_formatted).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                {formatPeriodDate(ad.group_first_seen || ad.start_date_formatted)}
+                                {formatPeriodDate(ad.group_first_seen || ad.start_date_formatted) && formatPeriodDate(ad.group_last_seen || ad.end_date_formatted) && ' — '}
+                                {formatPeriodDate(ad.group_last_seen || ad.end_date_formatted)}
                               </p>
                             </div>
                           )}

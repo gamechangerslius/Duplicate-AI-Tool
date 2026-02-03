@@ -186,11 +186,39 @@ export async function fetchAds(
 
     const adMap = new Map(adDetails?.map(ad => [ad.ad_archive_id, ad]));
 
+    // Group metadata (first/last seen) computed from ads table
+    const groupIds = groups.map(g => g.vector_group).filter((v) => v !== null && v !== undefined);
+    const { data: groupDates } = await supabase
+      .from(ADS_TABLE)
+      .select('vector_group, start_date_formatted, end_date_formatted')
+      .in('vector_group', groupIds);
+
+    const groupPeriodMap = new Map<number, { start?: string | null; end?: string | null }>();
+    (groupDates || []).forEach((row: any) => {
+      const vg = Number(row.vector_group);
+      if (!Number.isFinite(vg)) return;
+      const existing = groupPeriodMap.get(vg) || { start: null, end: null };
+      const start = row.start_date_formatted ? new Date(row.start_date_formatted).getTime() : null;
+      const end = row.end_date_formatted ? new Date(row.end_date_formatted).getTime() : null;
+
+      const currentStart = existing.start ? new Date(existing.start).getTime() : null;
+      const currentEnd = existing.end ? new Date(existing.end).getTime() : null;
+
+      if (start !== null && (currentStart === null || start < currentStart)) {
+        existing.start = row.start_date_formatted;
+      }
+      if (end !== null && (currentEnd === null || end > currentEnd)) {
+        existing.end = row.end_date_formatted;
+      }
+      groupPeriodMap.set(vg, existing);
+    });
+
     // Assemble the final objects
     const ads: Ad[] = await Promise.all(groups.map(async (g) => {
       const baseAd = adMap.get(g.rep_ad_archive_id);
       const imageUrl = await getCreativeUrl(g.rep_ad_archive_id, businessSlug);
 
+      const groupPeriod = groupPeriodMap.get(Number(g.vector_group));
       return {
         ...baseAd,
         id: g.rep_ad_archive_id,
@@ -198,6 +226,8 @@ export async function fetchAds(
         duplicates_count: g.items,
         image_url: imageUrl,
         ai_description: g.ai_description || baseAd?.ai_description, 
+        group_first_seen: groupPeriod?.start || null,
+        group_last_seen: groupPeriod?.end || null,
         meta_ad_url: `https://www.facebook.com/ads/library/?id=${g.rep_ad_archive_id}`
       } as Ad;
     }));
