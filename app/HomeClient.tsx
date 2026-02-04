@@ -16,7 +16,7 @@ import { usePageNames } from "@/hooks/usePageNames";
 import { useDuplicatesStats } from "@/hooks/useDuplicatesStats";
 
 // Components & Utils
-import { isUserAdmin, getUserBusinesses } from "@/utils/supabase/admin";
+import { isUserAdmin } from "@/utils/supabase/admin";
 import { createClient } from "@/utils/supabase/client";
 import { AdCard } from "@/components/AdCard";
 import { ViewToggle } from "@/components/ViewToggle";
@@ -138,7 +138,8 @@ function HomeContent(): JSX.Element {
       const adminStatus = await isUserAdmin(user.id);
       setIsAdmin(adminStatus);
 
-      const bData = await getUserBusinesses(user.id);
+      const { data: biz } = await supabase.from("businesses").select("*");
+      const bData = biz || [];
       setBusinesses(bData);
       setOwnedBusinessIds(bData.filter((b) => b.owner_id === user.id).map((b) => b.id));
 
@@ -317,10 +318,6 @@ function HomeContent(): JSX.Element {
               value={businessId || ""}
               onChange={(e) => {
                 const newBizId = e.target.value;
-                if (!canEditBusiness(newBizId)) {
-                  alert("Access denied.");
-                  return;
-                }
                 setBusinessId(newBizId);
               }}
               className="h-10 px-4 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold outline-none cursor-pointer"

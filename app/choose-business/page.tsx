@@ -76,13 +76,12 @@ export default function ChooseBusinessPage() {
       setError('Please select at least one business')
       return
     }
-    // Persist access for selected non-owned businesses
-    const selectedNonOwned = selectedBusinessIds.filter(id => !ownedBusinessIds.includes(id))
-    if (userId && selectedNonOwned.length > 0) {
+    // Persist access for all selected businesses
+    if (userId && selectedBusinessIds.length > 0) {
       supabase
         .from('business_access')
         .upsert(
-          selectedNonOwned.map(business_id => ({ business_id, user_id: userId, role: 'viewer' })),
+          selectedBusinessIds.map(business_id => ({ business_id, user_id: userId, role: 'viewer' })),
           { onConflict: 'business_id,user_id' }
         )
         .then(() => {
