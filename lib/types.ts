@@ -17,6 +17,7 @@ export interface Ad {
   end_date_formatted: string | null | undefined;
   vector_group: number | null;
   group_created_at?: string | null;
+  group_updated_at?: string | null;
   new_count?: number;
   duplicates_count?: number;
   items?: number; // total items count from ads_groups_test

@@ -58,7 +58,7 @@ export async function fetchAds(
     displayFormat?: string;
     duplicatesRange?: { min: number; max: number };
     aiDescription?: string;
-    sortBy?: 'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc';
+    sortBy?: 'newest' | 'oldest' | 'start_date_asc' | 'start_date_desc' | 'most_duplicates' | 'least_duplicates';
   },
   pagination?: { page: number; perPage: number },
   options?: { signal?: AbortSignal }
@@ -136,6 +136,8 @@ export async function fetchAds(
         items, 
         rep_ad_archive_id,
         ai_description,
+        created_at,
+        updated_at,
         business:businesses(slug)
       `, { count: 'exact' })
       .eq('business_id', filters.businessId);
@@ -170,7 +172,21 @@ export async function fetchAds(
     }
 
     // Sorting logic
-    query = query.order('items', { ascending: false });
+    switch (filters?.sortBy) {
+      case 'oldest':
+        query = query.order('created_at', { ascending: true });
+        break;
+      case 'most_duplicates':
+        query = query.order('items', { ascending: false });
+        break;
+      case 'least_duplicates':
+        query = query.order('items', { ascending: true });
+        break;
+      case 'newest':
+      default:
+        query = query.order('created_at', { ascending: false });
+        break;
+    }
 
     const { data: groups, count, error } = await query.range(from, to);
     if (error || !groups) return { ads: [], total: 0 };
@@ -193,6 +209,12 @@ export async function fetchAds(
       .select('vector_group, start_date_formatted, end_date_formatted')
       .in('vector_group', groupIds);
 
+    const { data: groupStatus } = await supabase
+      .from(ADS_GROUPS_STATUS_VIEW)
+      .select('vector_group, new_count, diff_count, status, updated_at')
+      .eq('business_id', filters.businessId)
+      .in('vector_group', groupIds);
+
     const groupPeriodMap = new Map<number, { start?: string | null; end?: string | null }>();
     (groupDates || []).forEach((row: any) => {
       const vg = Number(row.vector_group);
@@ -213,12 +235,25 @@ export async function fetchAds(
       groupPeriodMap.set(vg, existing);
     });
 
+    const groupStatusMap = new Map<number, { new_count?: number | null; diff_count?: number | null; status?: string | null; updated_at?: string | null }>();
+    (groupStatus || []).forEach((row: any) => {
+      const vg = Number(row.vector_group);
+      if (!Number.isFinite(vg)) return;
+      groupStatusMap.set(vg, {
+        new_count: row.new_count ?? null,
+        diff_count: row.diff_count ?? null,
+        status: row.status ?? null,
+        updated_at: row.updated_at ?? null
+      });
+    });
+
     // Assemble the final objects
     const ads: Ad[] = await Promise.all(groups.map(async (g) => {
       const baseAd = adMap.get(g.rep_ad_archive_id);
       const imageUrl = await getCreativeUrl(g.rep_ad_archive_id, businessSlug);
 
       const groupPeriod = groupPeriodMap.get(Number(g.vector_group));
+      const statusInfo = groupStatusMap.get(Number(g.vector_group));
       return {
         ...baseAd,
         id: g.rep_ad_archive_id,
@@ -228,6 +263,11 @@ export async function fetchAds(
         ai_description: g.ai_description || baseAd?.ai_description, 
         group_first_seen: groupPeriod?.start || null,
         group_last_seen: groupPeriod?.end || null,
+        group_created_at: g.created_at || null,
+        group_updated_at: statusInfo?.updated_at || g.updated_at || null,
+        new_count: statusInfo?.new_count ?? undefined,
+        diff_count: statusInfo?.diff_count ?? undefined,
+        status: statusInfo?.status ?? undefined,
         meta_ad_url: `https://www.facebook.com/ads/library/?id=${g.rep_ad_archive_id}`
       } as Ad;
     }));

@@ -76,6 +76,19 @@ export default function ChooseBusinessPage() {
       setError('Please select at least one business')
       return
     }
+    // Persist access for selected non-owned businesses
+    const selectedNonOwned = selectedBusinessIds.filter(id => !ownedBusinessIds.includes(id))
+    if (userId && selectedNonOwned.length > 0) {
+      supabase
+        .from('business_access')
+        .upsert(
+          selectedNonOwned.map(business_id => ({ business_id, user_id: userId, role: 'viewer' })),
+          { onConflict: 'business_id,user_id' }
+        )
+        .then(() => {
+          // ignore persistence errors; user can still navigate
+        })
+    }
     // Redirect to home with first selected business
     router.push(`/?businessId=${selectedBusinessIds[0]}`)
   }

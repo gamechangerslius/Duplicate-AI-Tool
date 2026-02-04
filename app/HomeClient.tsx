@@ -16,7 +16,7 @@ import { usePageNames } from "@/hooks/usePageNames";
 import { useDuplicatesStats } from "@/hooks/useDuplicatesStats";
 
 // Components & Utils
-import { isUserAdmin } from "@/utils/supabase/admin";
+import { isUserAdmin, getUserBusinesses } from "@/utils/supabase/admin";
 import { createClient } from "@/utils/supabase/client";
 import { AdCard } from "@/components/AdCard";
 import { ViewToggle } from "@/components/ViewToggle";
@@ -78,6 +78,7 @@ function HomeContent(): JSX.Element {
   const [committedAiDescription, setCommittedAiDescription] = useState("");
   const [duplicatesRange, setDuplicatesRange] = useState<[number, number]>([0, 100]);
   const [committedDuplicatesRange, setCommittedDuplicatesRange] = useState<[number, number]>([0, 100]);
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'most_duplicates' | 'least_duplicates'>('newest');
   const [pageMenuOpen, setPageMenuOpen] = useState(false);
   const pageMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -92,6 +93,7 @@ function HomeContent(): JSX.Element {
     endDate: endDate || undefined,
     displayFormat: displayFormat !== "ALL" ? displayFormat : undefined,
     aiDescription: committedAiDescription || undefined,
+    sortBy,
     page: currentPage,
     perPage: PER_PAGE,
     duplicatesRange: {
@@ -112,7 +114,7 @@ function HomeContent(): JSX.Element {
 
   const groupedDates = useMemo(() => {
     const dates = Array.from(
-      new Set(ads.map((a) => a.created_at?.split("T")[0]).filter(Boolean)),
+      new Set(ads.map((a) => (a.group_created_at || a.created_at)?.split("T")[0]).filter(Boolean)),
     );
     return dates.sort((a, b) => dayjs(b).unix() - dayjs(a).unix());
   }, [ads]);
@@ -136,8 +138,7 @@ function HomeContent(): JSX.Element {
       const adminStatus = await isUserAdmin(user.id);
       setIsAdmin(adminStatus);
 
-      const { data: biz } = await supabase.from("businesses").select("*");
-      const bData = biz || [];
+      const bData = await getUserBusinesses(user.id);
       setBusinesses(bData);
       setOwnedBusinessIds(bData.filter((b) => b.owner_id === user.id).map((b) => b.id));
 
@@ -149,6 +150,7 @@ function HomeContent(): JSX.Element {
 
       // Sync State from URL if exists
       if (searchParams.get("displayFormat")) setDisplayFormat(searchParams.get("displayFormat") as any);
+      if (searchParams.get("sortBy")) setSortBy(searchParams.get("sortBy") as any);
       if (searchParams.get("pageName")) setSelectedPage(searchParams.get("pageName")!);
       if (searchParams.get("startDate")) setStartDate(searchParams.get("startDate")!);
       if (searchParams.get("endDate")) setEndDate(searchParams.get("endDate")!);
@@ -208,6 +210,7 @@ function HomeContent(): JSX.Element {
     const params = new URLSearchParams();
     params.set("businessId", businessId);
     if (displayFormat !== "ALL") params.set("displayFormat", displayFormat);
+    if (sortBy !== 'newest') params.set("sortBy", sortBy);
     if (selectedPage) params.set("pageName", selectedPage);
     if (startDate) params.set("startDate", startDate);
     if (endDate) params.set("endDate", endDate);
@@ -226,6 +229,7 @@ function HomeContent(): JSX.Element {
   }, [
     businessId,
     displayFormat,
+    sortBy,
     selectedPage,
     startDate,
     endDate,
@@ -470,8 +474,25 @@ function HomeContent(): JSX.Element {
         )}
 
         <div className="flex items-center justify-between py-6 mb-8 border-y border-zinc-50">
-          <div className="bg-zinc-50 p-1 rounded-lg border border-zinc-100">
-            <ViewToggle value={displayFormat} onChange={setDisplayFormat} />
+          <div className="flex items-center gap-6">
+            <div className="bg-zinc-50 p-1 rounded-md border border-zinc-100">
+              <ViewToggle value={displayFormat} onChange={setDisplayFormat} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                Sort group by
+              </span>
+              <select
+                value={sortBy}
+                onChange={(e) => { setSortBy(e.target.value as any); setCurrentPage(1); }}
+                className="h-9 px-4 bg-white border border-zinc-200 rounded-md text-[10px] font-black uppercase tracking-widest text-zinc-500 outline-none focus:shadow-sm hover:bg-zinc-50 transition-all"
+              >
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="most_duplicates">Most duplicates</option>
+                <option value="least_duplicates">Least duplicates</option>
+              </select>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-black text-zinc-300 uppercase tracking-widest">
@@ -505,7 +526,7 @@ function HomeContent(): JSX.Element {
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-6 gap-y-12">
                   {ads
-                    .filter((a) => a.created_at?.startsWith(date))
+                    .filter((a) => (a.group_created_at || a.created_at)?.startsWith(date))
                     .map((ad) => (
                       <Link
                         key={ad.id}

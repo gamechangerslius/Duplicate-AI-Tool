@@ -46,19 +46,33 @@ export async function getUserBusinesses(userId: string): Promise<any[]> {
 
       return data || [];
     } else {
-      // Regular users see only their own businesses
-      const { data, error } = await supabase
+      // Regular users see businesses they own OR were granted access to
+      const { data: owned, error: ownedError } = await supabase
         .from('businesses')
         .select('id, name, slug, owner_id, created_at')
         .eq('owner_id', userId)
         .order('name', { ascending: true });
 
-      if (error) {
-        console.error('Failed to fetch user businesses:', error);
-        return [];
+      if (ownedError) {
+        console.error('Failed to fetch user businesses:', ownedError);
       }
 
-      return data || [];
+      const { data: accessRows, error: accessError } = await supabase
+        .from('business_access')
+        .select('business:businesses(id, name, slug, owner_id, created_at)')
+        .eq('user_id', userId);
+
+      if (accessError) {
+        console.error('Failed to fetch business access:', accessError);
+      }
+
+      const accessBusinesses = (accessRows || [])
+        .map((r: any) => r.business)
+        .filter(Boolean);
+
+      const merged = [...(owned || []), ...accessBusinesses];
+      const deduped = Array.from(new Map(merged.map((b: any) => [b.id, b])).values());
+      return deduped;
     }
   } catch (err) {
     console.error('Error getting user businesses:', err);

@@ -1,7 +1,7 @@
 "use client";
 
 import { type Ad } from '@/lib/types';
-import { fetchDuplicatesStats } from '@/utils/supabase/db';
+import dayjs from 'dayjs';
 import Image from 'next/image';
 
 interface AdCardProps {
@@ -13,7 +13,11 @@ export function AdCard({ ad, isRefreshing }: AdCardProps) {
   const isVideo = ad.display_format === 'VIDEO';
   const imageUrl = ad.image_url || '';
   const isNewGroup = !!ad.group_created_at && (Date.now() - new Date(ad.group_created_at).getTime() <= 24 * 60 * 60 * 1000);
-  const newCount = ad.new_count || 0;
+  const newCount = Number(ad.new_count ?? 0);
+  const diffCount = Number(ad.diff_count ?? 0);
+  const recentScaleTs = ad.group_updated_at || ad.group_created_at || ad.created_at;
+  const recentScaleDate = recentScaleTs ? dayjs(recentScaleTs) : null;
+  const isRecentScale = !!recentScaleDate && recentScaleDate.isValid() && dayjs().diff(recentScaleDate, 'hour', true) <= 12;
   // Items should be provided by parent; display ad.items directly.
   const itemsCount = ad.items;
   const loadingItems = false;
@@ -40,19 +44,15 @@ export function AdCard({ ad, isRefreshing }: AdCardProps) {
         {/* Top Overlay Badges */}
         <div className="absolute top-3 left-3 right-3 flex justify-between items-start z-20">
           <div className="flex flex-col gap-2">
-            {isNewGroup && (
-              <div className="bg-zinc-950 text-white text-[9px] px-2 py-1 rounded-full font-black uppercase tracking-tighter">
+            {isNewGroup && newCount > 0 && (
+              <div className="bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-[9px] px-2.5 py-1 rounded-full font-black uppercase tracking-wider shadow-sm">
                 New +{newCount}
-              </div>
-            )}
-            {(itemsCount || itemsCount === 0) && (
-              <div className="bg-white/90 backdrop-blur-md border border-zinc-200 text-zinc-900 text-[9px] px-2 py-1 rounded-full font-bold uppercase tracking-tighter shadow-sm">
-                {`${ad.duplicates_count} Duplicates`}
               </div>
             )}
           </div>
 
-          <div className="flex gap-1.5">
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex gap-1.5">
             {isVideo && (
               <div className="bg-white/90 backdrop-blur-md border border-zinc-200 p-1.5 rounded-lg shadow-sm">
                 <svg className="w-3 h-3 text-zinc-900" fill="currentColor" viewBox="0 0 24 24">
@@ -65,6 +65,12 @@ export function AdCard({ ad, isRefreshing }: AdCardProps) {
                 <svg className="w-3 h-3 text-zinc-900" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                 </svg>
+              </div>
+            )}
+            </div>
+            {diffCount > 0 && isRecentScale && (
+              <div className="bg-white/90 backdrop-blur-md border border-emerald-200 text-emerald-700 text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider shadow-sm">
+                Scale +{diffCount}
               </div>
             )}
           </div>
