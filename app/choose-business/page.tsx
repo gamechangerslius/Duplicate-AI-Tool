@@ -52,6 +52,17 @@ export default function ChooseBusinessPage() {
             .filter(b => b.owner_id === user.id)
             .map(b => b.id)
           setOwnedBusinessIds(owned)
+          // Preselect from localStorage if available
+          try {
+            const raw = localStorage.getItem('selectedBusinessIds')
+            if (raw) {
+              const parsed = JSON.parse(raw)
+              if (Array.isArray(parsed)) {
+                const valid = parsed.filter((id: any) => (biz || []).some(b => b.id === id))
+                if (valid.length) setSelectedBusinessIds(valid)
+              }
+            }
+          } catch {}
         }
       } finally {
         setLoading(false)
@@ -76,18 +87,10 @@ export default function ChooseBusinessPage() {
       setError('Please select at least one business')
       return
     }
-    // Persist access for all selected businesses
-    if (userId && selectedBusinessIds.length > 0) {
-      supabase
-        .from('business_access')
-        .upsert(
-          selectedBusinessIds.map(business_id => ({ business_id, user_id: userId, role: 'viewer' })),
-          { onConflict: 'business_id,user_id' }
-        )
-        .then(() => {
-          // ignore persistence errors; user can still navigate
-        })
-    }
+    // Persist selection locally
+    try {
+      localStorage.setItem('selectedBusinessIds', JSON.stringify(selectedBusinessIds))
+    } catch {}
     // Redirect to home with first selected business
     router.push(`/?businessId=${selectedBusinessIds[0]}`)
   }

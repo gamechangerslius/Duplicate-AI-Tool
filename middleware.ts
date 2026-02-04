@@ -81,8 +81,14 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // Redirect to auth if accessing protected routes without login
-  if (!user && request.nextUrl.pathname.startsWith('/setup')) {
+  // Redirect to auth if accessing any app route without login
+  const pathname = request.nextUrl.pathname
+  const isAuthRoute = pathname.startsWith('/auth')
+  const isNextRoute = pathname.startsWith('/_next')
+  const isPublicAsset = pathname === '/favicon.ico' || pathname === '/robots.txt' || pathname === '/sitemap.xml'
+  const isAuthApi = pathname.startsWith('/api/auth')
+
+  if (!user && !isAuthRoute && !isNextRoute && !isPublicAsset && !isAuthApi) {
     return NextResponse.redirect(new URL('/auth', request.url))
   }
 
@@ -90,5 +96,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/setup/:path*', '/api/:path*'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)'],
 }

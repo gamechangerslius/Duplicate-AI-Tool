@@ -140,10 +140,24 @@ function HomeContent(): JSX.Element {
 
       const { data: biz } = await supabase.from("businesses").select("*");
       const bData = biz || [];
-      setBusinesses(bData);
       setOwnedBusinessIds(bData.filter((b) => b.owner_id === user.id).map((b) => b.id));
 
-      const initialBizId = searchParams.get("businessId") || (bData.length > 0 ? bData[0].id : null);
+      let selectedIds: string[] = [];
+      try {
+        const raw = localStorage.getItem('selectedBusinessIds');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) selectedIds = parsed;
+        }
+      } catch {}
+
+      const filteredBusinesses = selectedIds.length
+        ? bData.filter((b) => selectedIds.includes(b.id))
+        : [];
+
+      setBusinesses(filteredBusinesses);
+
+      const initialBizId = searchParams.get("businessId") || (filteredBusinesses.length > 0 ? filteredBusinesses[0].id : null);
       if (!initialBizId) {
         router.replace("/choose-business");
         return;
@@ -168,7 +182,11 @@ function HomeContent(): JSX.Element {
         setCommittedDuplicatesRange([Number(minD), Number(maxD)]);
       }
 
-      setBusinessId(initialBizId);
+      if (filteredBusinesses.length && !filteredBusinesses.some((b) => b.id === initialBizId)) {
+        setBusinessId(filteredBusinesses[0].id);
+      } else {
+        setBusinessId(initialBizId);
+      }
       lastSelectedBusinessId.current = initialBizId;
       initialized.current = true;
       setAuthCheckLoading(false);

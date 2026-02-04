@@ -46,22 +46,19 @@ export async function getUserBusinesses(userId: string): Promise<any[]> {
 
       return data || [];
     } else {
-      // Regular users see only businesses they selected (business_access)
-      const { data: accessRows, error: accessError } = await supabase
-        .from('business_access')
-        .select('business:businesses(id, name, slug, owner_id, created_at)')
-        .eq('user_id', userId);
+      // Regular users see only their own businesses
+      const { data, error } = await supabase
+        .from('businesses')
+        .select('id, name, slug, owner_id, created_at')
+        .eq('owner_id', userId)
+        .order('name', { ascending: true });
 
-      if (accessError) {
-        console.error('Failed to fetch business access:', accessError);
+      if (error) {
+        console.error('Failed to fetch user businesses:', error);
         return [];
       }
 
-      const accessBusinesses = (accessRows || [])
-        .map((r: any) => r.business)
-        .filter(Boolean);
-
-      return accessBusinesses;
+      return data || [];
     }
   } catch (err) {
     console.error('Error getting user businesses:', err);
