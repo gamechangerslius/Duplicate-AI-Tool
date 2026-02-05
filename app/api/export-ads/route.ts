@@ -45,6 +45,9 @@ export async function GET(req: NextRequest) {
   const format = (url.searchParams.get('format') || 'csv').toLowerCase();
   const delimiterQ = (url.searchParams.get('delimiter') || 'semicolon').toLowerCase();
   const delimiter: 'comma' | 'semicolon' = delimiterQ === 'comma' ? 'comma' : 'semicolon';
+  const limitQ = url.searchParams.get('limit');
+  const maxRows = Math.max(1, Math.min(Number(limitQ || '10000') || 10000, 50000));
+  const batchSize = 1000;
 
   try {
     const supa = await createClient();
@@ -62,17 +65,22 @@ export async function GET(req: NextRequest) {
     if (!hasAccess) return NextResponse.json({ message: "You don't have access to this business" }, { status: 403 });
     if (!businessId) return NextResponse.json({ message: "Missing businessId" }, { status: 400 });
 
-    // Build ads query
-    let adsQuery = supabase
-      .from('ads')
-      .select('*')
-      .eq('business_id', businessId);
+    // Build ads query (batched to avoid timeouts)
+    const buildAdsQuery = () => {
+      let q = supabase
+        .from('ads')
+        .select('*')
+        .eq('business_id', businessId)
+        .order('created_at', { ascending: true });
 
-    if (pageName) adsQuery = adsQuery.eq('page_name', pageName);
-    if (displayFormat) adsQuery = adsQuery.eq('display_format', displayFormat);
-    if (startDate) adsQuery = adsQuery.gte('start_date_formatted', startDate);
-    if (endDate) adsQuery = adsQuery.lte('end_date_formatted', endDate);
-    if (aiDescription) adsQuery = adsQuery.ilike('ai_description', `%${aiDescription}%`);
+      if (pageName) q = q.eq('page_name', pageName);
+      if (displayFormat) q = q.eq('display_format', displayFormat);
+      if (startDate) q = q.gte('start_date_formatted', startDate);
+      if (endDate) q = q.lte('end_date_formatted', endDate);
+      if (aiDescription) q = q.ilike('ai_description', `%${aiDescription}%`);
+
+      return q;
+    };
 
     // Filter by duplicates range via vector_group in groups table
     let allowedGroups: number[] | null = null;
@@ -86,16 +94,24 @@ export async function GET(req: NextRequest) {
         .gte('items', minVal)
         .lte('items', maxVal);
       allowedGroups = (groups || []).map(g => Number(g.vector_group)).filter(n => Number.isFinite(n));
-      if (allowedGroups.length) {
-        adsQuery = adsQuery.in('vector_group', allowedGroups);
-      } else {
+      if (!allowedGroups.length) {
         // no groups in range => empty set
         return NextResponse.json({ message: 'No data for selected range', items: [] }, { status: 200 });
       }
     }
 
-    const { data: ads, error } = await adsQuery;
-    if (error) return NextResponse.json({ message: error.message }, { status: 500 });
+    let ads: any[] = [];
+    for (let from = 0; from < maxRows; from += batchSize) {
+      const to = Math.min(from + batchSize - 1, maxRows - 1);
+      let q = buildAdsQuery().range(from, to);
+      if (allowedGroups?.length) q = q.in('vector_group', allowedGroups);
+
+      const { data: batch, error } = await q;
+      if (error) return NextResponse.json({ message: error.message }, { status: 500 });
+      if (!batch || batch.length === 0) break;
+      ads = ads.concat(batch);
+      if (batch.length < batchSize) break;
+    }
 
     // Build group metadata map: items count, representative id, group AI description
     const vectorGroups = Array.from(new Set((ads || [])
