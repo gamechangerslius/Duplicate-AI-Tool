@@ -3,8 +3,10 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { isUserAdmin } from "@/utils/supabase/admin";
 import { supabase } from "@/lib/supabase";
+import ExcelJS from "exceljs";
 
-export const runtime = "nodejs";
+// Increase timeout for large exports (max 300s on Vercel)
+export const maxDuration = 300;
 
 function parseBool(v: any) { return String(v).toLowerCase() === 'true'; }
 
@@ -22,9 +24,15 @@ function toCSV(rows: Record<string, any>[], opts?: { delimiter?: 'comma' | 'semi
   const headers = cols.map(c => (opts?.headers?.[c] ?? c));
   const escape = (v: any) => {
     if (v === null || v === undefined) return "";
-    // Avoid Excel breaking lines; keep readable strings
-    const s = typeof v === 'string' ? v : JSON.stringify(v);
-    const cleaned = s.replace(/\r|\n/g, ' ').replace(/"/g, '""');
+    // Convert to string
+    let s = typeof v === 'string' ? v : JSON.stringify(v);
+    // Remove line breaks, tabs, and control characters
+    s = s.replace(/[\r\n\t]+/g, ' '); // Replace breaks with space
+    s = s.replace(/[\u0000-\u001F\u007F-\u009F]/g, ''); // Remove control chars
+    // Remove multiple spaces
+    s = s.replace(/\s+/g, ' ').trim();
+    // Escape quotes for CSV
+    const cleaned = s.replace(/"/g, '""');
     return `"${cleaned}"`;
   };
   const headerLine = headers.join(delimiterChar);
@@ -46,8 +54,9 @@ export async function GET(req: NextRequest) {
   const delimiterQ = (url.searchParams.get('delimiter') || 'semicolon').toLowerCase();
   const delimiter: 'comma' | 'semicolon' = delimiterQ === 'comma' ? 'comma' : 'semicolon';
   const limitQ = url.searchParams.get('limit');
-  const maxRows = Math.max(1, Math.min(Number(limitQ || '10000') || 10000, 50000));
-  const batchSize = 1000;
+  // Если limit не указан, экспортируем все (999999), иначе используем переданное значение
+  const maxRows = limitQ ? Math.max(1, Number(limitQ) || 999999) : 999999;
+  const batchSize = 1000; // Supabase max limit per request
 
   try {
     const supa = await createClient();
@@ -65,34 +74,22 @@ export async function GET(req: NextRequest) {
     if (!hasAccess) return NextResponse.json({ message: "You don't have access to this business" }, { status: 403 });
     if (!businessId) return NextResponse.json({ message: "Missing businessId" }, { status: 400 });
 
-    // Build ads query (batched to avoid timeouts)
-    const buildAdsQuery = () => {
-      let q = supabase
-        .from('ads')
-        .select('*')
-        .eq('business_id', businessId)
-        .order('created_at', { ascending: true });
-
-      if (pageName) q = q.eq('page_name', pageName);
-      if (displayFormat) q = q.eq('display_format', displayFormat);
-      if (startDate) q = q.gte('start_date_formatted', startDate);
-      if (endDate) q = q.lte('end_date_formatted', endDate);
-      if (aiDescription) q = q.ilike('ai_description', `%${aiDescription}%`);
-
-      return q;
-    };
-
-    // Filter by duplicates range via vector_group in groups table
+    // Filter by duplicates range via vector_group in groups table FIRST (faster than ads table)
     let allowedGroups: number[] | null = null;
     if (minDuplicates || maxDuplicates) {
       const minVal = Number(minDuplicates || '0');
       const maxVal = Number(maxDuplicates || '999999');
-      const { data: groups } = await supabase
+      const { data: groups, error: groupsError } = await supabase
         .from('ads_groups_test')
-        .select('vector_group, items')
+        .select('vector_group')
         .eq('business_id', businessId)
         .gte('items', minVal)
         .lte('items', maxVal);
+      
+      if (groupsError) {
+        return NextResponse.json({ message: groupsError.message }, { status: 500 });
+      }
+      
       allowedGroups = (groups || []).map(g => Number(g.vector_group)).filter(n => Number.isFinite(n));
       if (!allowedGroups.length) {
         // no groups in range => empty set
@@ -100,17 +97,48 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    let ads: any[] = [];
-    for (let from = 0; from < maxRows; from += batchSize) {
-      const to = Math.min(from + batchSize - 1, maxRows - 1);
-      let q = buildAdsQuery().range(from, to);
+    // Build ads query with minimal columns first, then select * only for needed rows
+    const buildAdsQuery = () => {
+      let q = supabase
+        .from('ads')
+        .select('*', { count: 'exact' })
+        .eq('business_id', businessId);
+
+      if (pageName) q = q.eq('page_name', pageName);
+      if (displayFormat) q = q.eq('display_format', displayFormat);
+      if (startDate) q = q.gte('start_date_formatted', startDate);
+      if (endDate) q = q.lte('end_date_formatted', endDate);
+      if (aiDescription) q = q.ilike('ai_description', `%${aiDescription}%`);
       if (allowedGroups?.length) q = q.in('vector_group', allowedGroups);
 
-      const { data: batch, error } = await q;
-      if (error) return NextResponse.json({ message: error.message }, { status: 500 });
+      return q.order('created_at', { ascending: true });
+    };
+
+    let ads: any[] = [];
+    let totalCount = 0;
+    
+    for (let from = 0; from < maxRows; from += batchSize) {
+      const to = Math.min(from + batchSize - 1, maxRows - 1);
+      const { data: batch, error, count } = await buildAdsQuery().range(from, to);
+      
+      if (error) {
+        return NextResponse.json({ 
+          message: error.message || 'Database query timeout. Try exporting fewer results or narrower filters.',
+          code: error.code
+        }, { status: 500 });
+      }
+      
+      if (count !== null && from === 0) totalCount = count;
+      
       if (!batch || batch.length === 0) break;
       ads = ads.concat(batch);
       if (batch.length < batchSize) break;
+    }
+
+    // После загрузки ads, отфильтруй их:
+    if (allowedGroups?.length) {
+      const allowedSet = new Set(allowedGroups);
+      ads = ads.filter(ad => allowedSet.has(Number(ad.vector_group)));
     }
 
     // Build group metadata map: items count, representative id, group AI description
@@ -119,30 +147,50 @@ export async function GET(req: NextRequest) {
       .filter(v => Number.isFinite(v) && v !== -1)));
 
     const groupsMap = new Map<number, { items: number; repId?: string; ai_description?: string }>();
+    let repIds: string[] = [];
+    
     if (vectorGroups.length) {
-      const { data: groupRows } = await supabase
-        .from('ads_groups_test')
-        .select('vector_group, items, rep_ad_archive_id, ai_description')
-        .eq('business_id', businessId)
-        .in('vector_group', vectorGroups);
-      (groupRows || []).forEach((g: any) => {
-        groupsMap.set(Number(g.vector_group), {
-          items: Number(g.items) || 0,
-          repId: g.rep_ad_archive_id || undefined,
-          ai_description: g.ai_description || undefined
+      try {
+        const { data: groupRows, error: groupError } = await supabase
+          .from('ads_groups_test')
+          .select('vector_group, items, rep_ad_archive_id, ai_description')
+          .eq('business_id', businessId)
+          .in('vector_group', vectorGroups);
+        
+        if (groupError) throw groupError;
+        
+        (groupRows || []).forEach((g: any) => {
+          groupsMap.set(Number(g.vector_group), {
+            items: Number(g.items) || 0,
+            repId: g.rep_ad_archive_id || undefined,
+            ai_description: g.ai_description || undefined
+          });
         });
-      });
+        
+        repIds = Array.from(new Set(Array.from(groupsMap.values()).map(v => v.repId).filter(Boolean))) as string[];
+      } catch (err: any) {
+        console.warn('Error fetching group metadata:', err?.message);
+      }
     }
 
-    // Fetch representative ad texts if available
+    // Fetch representative ad texts if available (in smaller batches to avoid timeout)
     let repTextMap = new Map<string, string>();
-    const repIds = Array.from(new Set(Array.from(groupsMap.values()).map(v => v.repId).filter(Boolean))) as string[];
     if (repIds.length) {
-      const { data: reps } = await supabase
-        .from('ads')
-        .select('ad_archive_id, text')
-        .in('ad_archive_id', repIds);
-      (reps || []).forEach((r: any) => repTextMap.set(String(r.ad_archive_id), r.text || ''));
+      try {
+        // Batch representative fetches in smaller chunks (max 100 per query)
+        for (let i = 0; i < repIds.length; i += 100) {
+          const chunk = repIds.slice(i, i + 100);
+          const { data: reps, error: repError } = await supabase
+            .from('ads')
+            .select('ad_archive_id, text')
+            .in('ad_archive_id', chunk);
+          
+          if (repError) throw repError;
+          (reps || []).forEach((r: any) => repTextMap.set(String(r.ad_archive_id), r.text || ''));
+        }
+      } catch (err: any) {
+        console.warn('Error fetching representative ad texts:', err?.message);
+      }
     }
 
     // Column order and friendly headers
@@ -233,18 +281,58 @@ export async function GET(req: NextRequest) {
 
     const isEmptyValue = (v: any) => v === null || v === undefined || v === '';
     const nonEmptyColumns = columnOrder.filter(col => rows.some(r => !isEmptyValue(r[col])));
-    const csv = toCSV(rows, { delimiter, columns: nonEmptyColumns, headers: headerMap });
-    const filename = `ads_export_${businessId}_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`;
-    // Prepend UTF-8 BOM to help Excel detect encoding and delimiter
-    const BOM = '\uFEFF';
-    return new Response(BOM + csv, {
+
+    // Create Excel workbook using ExcelJS
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Ads');
+
+    // Add headers
+    const headerRow = nonEmptyColumns.map(col => headerMap[col] || col);
+    worksheet.addRow(headerRow);
+    
+    // Style header row
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+    // Add data rows
+    for (const row of rows) {
+      const dataRow = nonEmptyColumns.map(col => {
+        const val = (row as any)[col];
+        if (val === null || val === undefined) return '';
+        if (typeof val === 'object') return JSON.stringify(val);
+        return String(val);
+      });
+      worksheet.addRow(dataRow);
+    }
+
+    // Set column widths and wrap text
+    worksheet.columns = nonEmptyColumns.map((col, idx) => ({
+      width: Math.min(50, Math.max(15, headerMap[col]?.length || 20)),
+      alignment: { wrapText: true, vertical: 'top' }
+    }));
+
+    // Generate Excel file
+    const buffer = await workbook.xlsx.writeBuffer();
+    const uint8array = new Uint8Array(buffer as any);
+    const filename = `ads_export_${businessId}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.xlsx`;
+
+    return new Response(uint8array, {
       headers: {
-        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'Content-Disposition': `attachment; filename=${filename}`,
         'Cache-Control': 'no-cache'
       }
     });
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message || 'Internal error' }, { status: 500 });
+    console.error('Export error:', e);
+    const message = e?.message || 'Internal error during export';
+    const isDatabaseTimeout = message.includes('timeout') || message.includes('ECONNREFUSED') || message.includes('statement timeout');
+    
+    return NextResponse.json({ 
+      message: isDatabaseTimeout 
+        ? 'Export timeout - try with fewer results, narrower date range, or fewer filters'
+        : message,
+      error: process.env.NODE_ENV === 'development' ? e?.toString() : undefined
+    }, { status: 500 });
   }
 }

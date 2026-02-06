@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAds } from "@/hooks/useAds";
 import { usePageNames } from "@/hooks/usePageNames";
 import { useDuplicatesStats } from "@/hooks/useDuplicatesStats";
+import { useExportProgress } from "@/hooks/useExportProgress";
 
 // Components & Utils
 import { isUserAdmin } from "@/utils/supabase/admin";
@@ -59,6 +60,7 @@ export default function HomeClient() {
 function HomeContent(): JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { progress, isExporting, fileBuffer, startExport, downloadFile } = useExportProgress();
 
   // States
   const [displayFormat, setDisplayFormat] = useState<"ALL" | "IMAGE" | "VIDEO">("ALL");
@@ -353,17 +355,65 @@ function HomeContent(): JSX.Element {
               Import
             </Link>
             {businessId && (
-              <a
-                href={`/api/export-ads?businessId=${encodeURIComponent(businessId)}${selectedPage?`&pageName=${encodeURIComponent(selectedPage)}`:''}${startDate?`&startDate=${encodeURIComponent(startDate)}`:''}${endDate?`&endDate=${encodeURIComponent(endDate)}`:''}${displayFormat!=="ALL"?`&displayFormat=${encodeURIComponent(displayFormat)}`:''}${committedAiDescription?`&aiDescription=${encodeURIComponent(committedAiDescription)}`:''}&minDuplicates=${encodeURIComponent(String(committedDuplicatesRange[0]))}&maxDuplicates=${encodeURIComponent(String(committedDuplicatesRange[1]))}&format=csv`}
-                className="h-10 px-5 bg-white text-zinc-900 rounded-lg flex items-center justify-center font-bold text-xs border border-zinc-200 hover:bg-zinc-50 transition-all shadow-sm"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Export
-              </a>
+              <>
+                <button
+                  onClick={() => {
+                    startExport(businessId, {
+                      pageName: selectedPage || undefined,
+                      startDate: startDate || undefined,
+                      endDate: endDate || undefined,
+                      displayFormat: displayFormat !== "ALL" ? displayFormat : undefined,
+                      aiDescription: committedAiDescription || undefined
+                    });
+                  }}
+                  disabled={isExporting}
+                  className="h-10 px-5 bg-white text-zinc-900 rounded-lg flex items-center justify-center font-bold text-xs border border-zinc-200 hover:bg-zinc-50 transition-all shadow-sm disabled:opacity-50"
+                >
+                  {isExporting ? 'Exporting...' : 'Export'}
+                </button>
+                {fileBuffer && progress?.type === 'complete' && (
+                  <button
+                    onClick={downloadFile}
+                    className="h-10 px-5 bg-green-600 text-white rounded-lg flex items-center justify-center font-bold text-xs hover:bg-green-700 transition-all shadow-sm"
+                  >
+                    Download
+                  </button>
+                )}
+              </>
             )}
           </div>
         </header>
+
+        {progress && (
+          <div className={`mb-6 p-4 rounded-lg border ${
+            progress.type === 'error' ? 'bg-red-50 border-red-200' :
+            progress.type === 'complete' ? 'bg-green-50 border-green-200' :
+            'bg-blue-50 border-blue-200'
+          }`}>
+            <p className={`font-bold text-sm ${
+              progress.type === 'error' ? 'text-red-900' :
+              progress.type === 'complete' ? 'text-green-900' :
+              'text-blue-900'
+            }`}>
+              {progress.message}
+            </p>
+            {progress.total && progress.type !== 'error' && (
+              <>
+                <p className="text-xs text-zinc-600 mt-2">
+                  {progress.current} / {progress.total} records
+                </p>
+                <div className="w-full bg-gray-300 rounded-full h-2 mt-2">
+                  <div
+                    className={`h-2 rounded-full transition-all ${
+                      progress.type === 'complete' ? 'bg-green-600' : 'bg-blue-600'
+                    }`}
+                    style={{ width: `${progress.percentage}%` }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
           <div className="flex flex-col gap-1.5" ref={pageMenuRef}>
